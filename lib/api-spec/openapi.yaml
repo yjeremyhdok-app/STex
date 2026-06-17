@@ -1,22 +1,19 @@
 openapi: 3.1.0
 info:
-  # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
   description: API specification
 servers:
   - url: /api
-    description: Base API path
 tags:
   - name: health
-    description: Health operations
+  - name: stream
+  - name: channels
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
-      summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -24,13 +21,363 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /extract:
+    post:
+      operationId: extractStreams
+      tags: [stream]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExtractInput"
+      responses:
+        "200":
+          description: Extraction result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtractResult"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /history:
+    get:
+      operationId: getHistory
+      tags: [stream]
+      responses:
+        "200":
+          description: List of recent extractions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/HistoryEntry"
+
+  /channels:
+    get:
+      operationId: listChannels
+      tags: [channels]
+      responses:
+        "200":
+          description: List of channels
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Channel"
+    post:
+      operationId: createChannel
+      tags: [channels]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChannelInput"
+      responses:
+        "201":
+          description: Created channel
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Channel"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /channels/{id}:
+    patch:
+      operationId: updateChannel
+      tags: [channels]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChannelInputPartial"
+      responses:
+        "200":
+          description: Updated channel
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Channel"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+    delete:
+      operationId: deleteChannel
+      tags: [channels]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteResult"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /channels/{id}/extract:
+    post:
+      operationId: extractChannel
+      tags: [channels]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Extraction result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtractResult"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
 components:
   schemas:
     HealthStatus:
       type: object
+      required: [status]
       properties:
         status:
           type: string
-      required:
-        - status
 
+    ExtractInput:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+
+    StreamLink:
+      type: object
+      required: [url, type]
+      properties:
+        url:
+          type: string
+        type:
+          type: string
+        quality:
+          type: ["string", "null"]
+        label:
+          type: ["string", "null"]
+
+    ExtractResult:
+      type: object
+      required: [links, pageTitle, sourceUrl, extractedAt]
+      properties:
+        links:
+          type: array
+          items:
+            $ref: "#/components/schemas/StreamLink"
+        pageTitle:
+          type: string
+        sourceUrl:
+          type: string
+        extractedAt:
+          type: string
+          format: date-time
+        error:
+          type: ["string", "null"]
+
+    HistoryEntry:
+      type: object
+      required: [id, sourceUrl, pageTitle, linkCount, extractedAt]
+      properties:
+        id:
+          type: integer
+        sourceUrl:
+          type: string
+        pageTitle:
+          type: string
+        linkCount:
+          type: integer
+        extractedAt:
+          type: string
+          format: date-time
+
+    Channel:
+      type: object
+      required: [id, name, url, apiUrl, method, headers, notes, loginUrl, loginBody, loginUsername, loginPassword, tokenPath, tokenType, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        url:
+          type: string
+          description: Trang web chứa player (dùng yt-dlp)
+        apiUrl:
+          type: string
+          description: API endpoint trực tiếp để lấy link stream
+        method:
+          type: string
+          description: HTTP method cho API (GET hoặc POST)
+          enum: [GET, POST]
+        headers:
+          type: string
+          description: JSON string của custom HTTP headers
+        notes:
+          type: string
+        loginUrl:
+          type: string
+          description: Endpoint để đăng nhập và lấy token
+        loginBody:
+          type: string
+          description: JSON body gửi khi login (dùng {username} và {password} làm placeholder)
+        loginUsername:
+          type: string
+          description: Tên đăng nhập
+        loginPassword:
+          type: string
+          description: Mật khẩu
+        tokenPath:
+          type: string
+          description: Đường dẫn tới token trong response JSON (VD data.token hoặc access_token)
+        tokenType:
+          type: string
+          description: Cách đính kèm token vào request
+          enum: [bearer, cookie, query]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ChannelInput:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        url:
+          type: string
+          default: ""
+        apiUrl:
+          type: string
+          default: ""
+        method:
+          type: string
+          enum: [GET, POST]
+          default: "GET"
+        headers:
+          type: string
+          default: "{}"
+        notes:
+          type: string
+          default: ""
+        loginUrl:
+          type: string
+          default: ""
+        loginBody:
+          type: string
+          default: "{}"
+        loginUsername:
+          type: string
+          default: ""
+        loginPassword:
+          type: string
+          default: ""
+        tokenPath:
+          type: string
+          default: ""
+        tokenType:
+          type: string
+          enum: [bearer, cookie, query]
+          default: "bearer"
+
+    ChannelInputPartial:
+      type: object
+      properties:
+        name:
+          type: string
+        url:
+          type: string
+        apiUrl:
+          type: string
+        method:
+          type: string
+          enum: [GET, POST]
+        headers:
+          type: string
+        notes:
+          type: string
+        loginUrl:
+          type: string
+        loginBody:
+          type: string
+        loginUsername:
+          type: string
+        loginPassword:
+          type: string
+        tokenPath:
+          type: string
+        tokenType:
+          type: string
+          enum: [bearer, cookie, query]
+
+    DeleteResult:
+      type: object
+      required: [success]
+      properties:
+        success:
+          type: boolean
+
+    ApiError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
