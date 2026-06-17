@@ -8,7 +8,7 @@ import { Feather } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
-import { AddChannelModal } from "@/components/AddChannelModal";
+import { BrowserAddToM3UModal } from "@/components/BrowserAddToM3UModal";
 
 interface DetectedLink {
   url: string;
@@ -1756,10 +1756,10 @@ function NativeBrowser() {
           )}
         </Animated.View>
 
-      <AddChannelModal
+      <BrowserAddToM3UModal
         visible={addChModal.visible}
         onClose={() => setAddChModal((p) => ({ ...p, visible: false }))}
-        prefillApiUrl={addChModal.apiUrl}
+        prefillUrl={addChModal.apiUrl}
         prefillPageUrl={addChModal.pageUrl}
       />
     </View>
