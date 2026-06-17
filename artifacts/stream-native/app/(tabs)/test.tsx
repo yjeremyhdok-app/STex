@@ -14,10 +14,11 @@ import { useColors } from "@/hooks/useColors";
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 type DrmMode = "none" | "clearkey" | "widevine";
+type KeyFormat = "hex" | "raw";
 
-interface KeyPair {
-  id: string; // hex key ID
-  key: string; // hex key
+/** Single combined "keyId:key" entry */
+interface KeyEntry {
+  combined: string;
 }
 
 interface WvHeader {
@@ -25,7 +26,7 @@ interface WvHeader {
   value: string;
 }
 
-// ── DRM badge mapping ─────────────────────────────────────────────────────────
+// ── Constants ─────────────────────────────────────────────────────────────────
 
 const DRM_LABELS: Record<DrmMode, string> = {
   none: "Không DRM",
@@ -39,9 +40,51 @@ const DRM_COLORS: Record<DrmMode, string> = {
   widevine: "#3b82f6",
 };
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Conversion helpers ────────────────────────────────────────────────────────
 
-function buildSource(url: string, drm: DrmMode, keys: KeyPair[], wvUrl: string, wvHeaders: WvHeader[]): VideoSource | null {
+/** base64url string → lowercase hex string */
+function base64urlToHex(b64url: string): string {
+  try {
+    const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/");
+    const rem = b64.length % 4;
+    const padded = rem ? b64 + "=".repeat(4 - rem) : b64;
+    const binary: string = atob(padded);
+    return Array.from(binary, (c) =>
+      c.charCodeAt(0).toString(16).padStart(2, "0")
+    ).join("");
+  } catch {
+    return b64url; // fallback: pass through as-is
+  }
+}
+
+/**
+ * Parse a "keyId:key" combined string.
+ * Returns [keyIdHex, keyHex] — converting from base64url if format === "raw".
+ */
+function parseKeyEntry(
+  combined: string,
+  format: KeyFormat
+): [string, string] | null {
+  const idx = combined.indexOf(":");
+  if (idx === -1) return null;
+  const left = combined.slice(0, idx).trim();
+  const right = combined.slice(idx + 1).trim();
+  if (!left || !right) return null;
+
+  if (format === "raw") {
+    return [base64urlToHex(left), base64urlToHex(right)];
+  }
+  return [left, right];
+}
+
+function buildSource(
+  url: string,
+  drm: DrmMode,
+  keyEntries: KeyEntry[],
+  keyFormat: KeyFormat,
+  wvUrl: string,
+  wvHeaders: WvHeader[]
+): VideoSource | null {
   if (!url.trim()) return null;
 
   if (drm === "none") {
@@ -50,8 +93,9 @@ function buildSource(url: string, drm: DrmMode, keys: KeyPair[], wvUrl: string, 
 
   if (drm === "clearkey") {
     const clearKeys: Record<string, string> = {};
-    keys.forEach((k) => {
-      if (k.id.trim() && k.key.trim()) clearKeys[k.id.trim()] = k.key.trim();
+    keyEntries.forEach(({ combined }) => {
+      const parsed = parseKeyEntry(combined, keyFormat);
+      if (parsed) clearKeys[parsed[0]] = parsed[1];
     });
     return {
       uri: url.trim(),
@@ -88,31 +132,38 @@ export default function TestScreen() {
 
   const [url, setUrl] = useState("");
   const [drmMode, setDrmMode] = useState<DrmMode>("none");
-  const [keys, setKeys] = useState<KeyPair[]>([{ id: "", key: "" }]);
+
+  // ClearKey state
+  const [keyFormat, setKeyFormat] = useState<KeyFormat>("hex");
+  const [keyEntries, setKeyEntries] = useState<KeyEntry[]>([{ combined: "" }]);
+
+  // Widevine state
   const [wvLicense, setWvLicense] = useState("");
   const [wvHeaders, setWvHeaders] = useState<WvHeader[]>([{ name: "", value: "" }]);
+
+  // Player state
   const [activeSource, setActiveSource] = useState<VideoSource | null>(null);
-  const [playerError, setPlayerError] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   const videoRef = useRef<VideoView>(null);
 
-  const player = useVideoPlayer(activeSource, useCallback((p) => {
-    p.play();
-  }, []));
+  const player = useVideoPlayer(
+    activeSource,
+    useCallback((p) => { p.play(); }, [])
+  );
 
-  // Resolve player status
   const status = player.status;
   const isBuffering = status === "loading";
   const isPlaying = status === "readyToPlay" && player.playing;
 
+  // ── Handlers ────────────────────────────────────────────────────────────────
+
   const handleTest = () => {
-    const source = buildSource(url, drmMode, keys, wvLicense, wvHeaders);
+    const source = buildSource(url, drmMode, keyEntries, keyFormat, wvLicense, wvHeaders);
     if (!source) {
       Alert.alert("Thiếu URL", "Nhập URL stream M3U8 trước");
       return;
     }
-    setPlayerError(null);
     setActiveSource(source);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
   };
@@ -120,28 +171,36 @@ export default function TestScreen() {
   const handleClear = () => {
     setActiveSource(null);
     setUrl("");
-    setPlayerError(null);
     setDrmMode("none");
-    setKeys([{ id: "", key: "" }] as KeyPair[]);
+    setKeyFormat("hex");
+    setKeyEntries([{ combined: "" }]);
     setWvLicense("");
     setWvHeaders([{ name: "", value: "" }]);
   };
 
-  // ClearKey key pair helpers
-  const addKeyPair = () => setKeys((prev) => [...prev, { id: "", key: "" }]);
-  const removeKeyPair = (i: number) => setKeys((prev) => prev.filter((_, idx) => idx !== i));
-  const updateKeyPair = (i: number, field: "id" | "key", val: string) => {
-    setKeys((prev) => prev.map((k, idx) => idx === i ? { ...k, [field]: val } : k));
-  };
+  // Key entry helpers
+  const addKeyEntry = () => setKeyEntries((p) => [...p, { combined: "" }]);
+  const removeKeyEntry = (i: number) =>
+    setKeyEntries((p) => p.filter((_, idx) => idx !== i));
+  const updateKeyEntry = (i: number, val: string) =>
+    setKeyEntries((p) => p.map((e, idx) => (idx === i ? { combined: val } : e)));
 
   // Widevine header helpers
-  const addWvHeader = () => setWvHeaders((prev) => [...prev, { name: "", value: "" }]);
-  const removeWvHeader = (i: number) => setWvHeaders((prev) => prev.filter((_, idx) => idx !== i));
-  const updateWvHeader = (i: number, field: "name" | "value", val: string) => {
-    setWvHeaders((prev) => prev.map((h, idx) => idx === i ? { ...h, [field]: val } : h));
-  };
+  const addWvHeader = () => setWvHeaders((p) => [...p, { name: "", value: "" }]);
+  const removeWvHeader = (i: number) =>
+    setWvHeaders((p) => p.filter((_, idx) => idx !== i));
+  const updateWvHeader = (i: number, field: "name" | "value", val: string) =>
+    setWvHeaders((p) =>
+      p.map((h, idx) => (idx === i ? { ...h, [field]: val } : h))
+    );
 
   const screenH = Dimensions.get("window").height;
+
+  // Placeholder based on selected format
+  const keyPlaceholder =
+    keyFormat === "hex"
+      ? "keyId_hex:key_hex"
+      : "base64url_keyId:base64url_key";
 
   return (
     <View style={[s.container, { backgroundColor: colors.background }]}>
@@ -149,14 +208,20 @@ export default function TestScreen() {
       <View style={[s.header, { paddingTop: insets.top + 16 }]}>
         <Text style={[s.headerTitle, { color: colors.foreground }]}>Test Player</Text>
         {activeSource && (
-          <TouchableOpacity style={[s.clearBtn, { borderColor: colors.border }]} onPress={handleClear}>
+          <TouchableOpacity
+            style={[s.clearBtn, { borderColor: colors.border }]}
+            onPress={handleClear}
+          >
             <Feather name="x" size={14} color={colors.mutedForeground} />
             <Text style={[s.clearTxt, { color: colors.mutedForeground }]}>Xoá</Text>
           </TouchableOpacity>
         )}
       </View>
 
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
         <ScrollView
           contentContainerStyle={[s.scroll, { paddingBottom: insets.bottom + 100 }]}
           keyboardShouldPersistTaps="handled"
@@ -169,7 +234,7 @@ export default function TestScreen() {
               <Text style={[s.cardTitle, { color: colors.foreground }]}>URL Stream</Text>
             </View>
             <TextInput
-              style={[s.urlInput, { backgroundColor: colors.background, borderColor: colors.border, color: colors.foreground }]}
+              style={[s.monoInput, { backgroundColor: colors.background, borderColor: colors.border, color: colors.foreground }]}
               placeholder="https://example.com/stream/index.m3u8"
               placeholderTextColor={colors.mutedForeground}
               value={url}
@@ -178,39 +243,43 @@ export default function TestScreen() {
               autoCorrect={false}
               keyboardType="url"
               returnKeyType="done"
-              multiline={false}
             />
           </View>
 
-          {/* DRM type selector */}
+          {/* DRM section */}
           <View style={[s.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <View style={s.cardHeader}>
               <Feather name="shield" size={14} color={colors.primary} />
               <Text style={[s.cardTitle, { color: colors.foreground }]}>Loại DRM</Text>
             </View>
-            <View style={s.drmRow}>
+
+            {/* DRM mode pills */}
+            <View style={s.pillRow}>
               {(["none", "clearkey", "widevine"] as DrmMode[]).map((mode) => {
                 const active = drmMode === mode;
                 const accent = DRM_COLORS[mode];
+                const icon =
+                  mode === "widevine" ? "lock"
+                  : mode === "clearkey" ? "key"
+                  : "unlock";
                 return (
                   <TouchableOpacity
                     key={mode}
-                    style={[s.drmPill, {
-                      backgroundColor: active ? accent + "20" : colors.background,
-                      borderColor: active ? accent : colors.border,
-                    }]}
+                    style={[
+                      s.pill,
+                      {
+                        backgroundColor: active ? accent + "20" : colors.background,
+                        borderColor: active ? accent : colors.border,
+                      },
+                    ]}
                     onPress={() => setDrmMode(mode)}
                   >
-                    {mode === "widevine" && (
-                      <Feather name="lock" size={11} color={active ? accent : colors.mutedForeground} />
-                    )}
-                    {mode === "clearkey" && (
-                      <Feather name="key" size={11} color={active ? accent : colors.mutedForeground} />
-                    )}
-                    {mode === "none" && (
-                      <Feather name="unlock" size={11} color={active ? accent : colors.mutedForeground} />
-                    )}
-                    <Text style={[s.drmPillTxt, { color: active ? accent : colors.mutedForeground }]}>
+                    <Feather
+                      name={icon}
+                      size={11}
+                      color={active ? accent : colors.mutedForeground}
+                    />
+                    <Text style={[s.pillTxt, { color: active ? accent : colors.mutedForeground }]}>
                       {DRM_LABELS[mode]}
                     </Text>
                   </TouchableOpacity>
@@ -218,55 +287,109 @@ export default function TestScreen() {
               })}
             </View>
 
-            {/* ClearKey fields */}
+            {/* ── ClearKey fields ─────────────────────────────────── */}
             {drmMode === "clearkey" && (
-              <View style={{ marginTop: 14, gap: 10 }}>
-                <Text style={[s.fieldLabel, { color: colors.mutedForeground }]}>
-                  Key ID + Key (hex) — có thể thêm nhiều cặp
-                </Text>
-                {keys.map((kp, i) => (
-                  <View key={i} style={s.keyRow}>
-                    <View style={{ flex: 1, gap: 6 }}>
-                      <TextInput
-                        style={[s.hexInput, { backgroundColor: colors.background, borderColor: colors.border, color: colors.foreground }]}
-                        placeholder="Key ID (hex)"
-                        placeholderTextColor={colors.mutedForeground}
-                        value={kp.id}
-                        onChangeText={(v) => updateKeyPair(i, "id", v)}
-                        autoCapitalize="none"
-                        autoCorrect={false}
-                      />
-                      <TextInput
-                        style={[s.hexInput, { backgroundColor: colors.background, borderColor: colors.border, color: colors.foreground }]}
-                        placeholder="Key (hex)"
-                        placeholderTextColor={colors.mutedForeground}
-                        value={kp.key}
-                        onChangeText={(v) => updateKeyPair(i, "key", v)}
-                        autoCapitalize="none"
-                        autoCorrect={false}
-                      />
-                    </View>
-                    {keys.length > 1 && (
-                      <TouchableOpacity style={s.removeBtn} onPress={() => removeKeyPair(i)}>
-                        <Feather name="minus-circle" size={18} color="#ef4444" />
-                      </TouchableOpacity>
-                    )}
+              <View style={{ marginTop: 16, gap: 12 }}>
+                {/* Format selector */}
+                <View style={s.formatRow}>
+                  <Text style={[s.fieldLabel, { color: colors.mutedForeground, flex: 1 }]}>
+                    Định dạng key
+                  </Text>
+                  <View style={s.pillRow}>
+                    {(["hex", "raw"] as KeyFormat[]).map((fmt) => {
+                      const active = keyFormat === fmt;
+                      return (
+                        <TouchableOpacity
+                          key={fmt}
+                          style={[
+                            s.fmtPill,
+                            {
+                              backgroundColor: active
+                                ? colors.primary + "18"
+                                : colors.background,
+                              borderColor: active ? colors.primary : colors.border,
+                            },
+                          ]}
+                          onPress={() => setKeyFormat(fmt)}
+                        >
+                          <Text
+                            style={[
+                              s.fmtPillTxt,
+                              { color: active ? colors.primary : colors.mutedForeground },
+                            ]}
+                          >
+                            {fmt === "hex" ? "Hex" : "Base64url (raw)"}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
                   </View>
-                ))}
-                <TouchableOpacity style={[s.addBtn, { borderColor: colors.border }]} onPress={addKeyPair}>
-                  <Feather name="plus" size={14} color={colors.primary} />
-                  <Text style={[s.addBtnTxt, { color: colors.primary }]}>Thêm key</Text>
-                </TouchableOpacity>
+                </View>
+
+                {/* Helper note about format */}
+                <View style={[s.noteBanner, { backgroundColor: "#22c55e12", borderColor: "#22c55e30" }]}>
+                  <Feather name="info" size={12} color="#22c55e" />
+                  <Text style={[s.noteTxt, { color: "#22c55e" }]}>
+                    {keyFormat === "hex"
+                      ? "Nhập dạng keyId:key — cả hai là chuỗi hex (đã chuyển đổi)"
+                      : "Nhập dạng keyId:key — cả hai là base64url (raw), app sẽ tự chuyển sang hex"}
+                  </Text>
+                </View>
+
+                {/* Key entries — ONE combined field each */}
+                <View style={{ gap: 8 }}>
+                  <Text style={[s.fieldLabel, { color: colors.mutedForeground }]}>
+                    Key — có thể thêm nhiều
+                  </Text>
+                  {keyEntries.map((entry, i) => (
+                    <View key={i} style={s.keyEntryRow}>
+                      <TextInput
+                        style={[
+                          s.monoInput,
+                          {
+                            flex: 1,
+                            backgroundColor: colors.background,
+                            borderColor: colors.border,
+                            color: colors.foreground,
+                          },
+                        ]}
+                        placeholder={keyPlaceholder}
+                        placeholderTextColor={colors.mutedForeground}
+                        value={entry.combined}
+                        onChangeText={(v) => updateKeyEntry(i, v)}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                      />
+                      {keyEntries.length > 1 && (
+                        <TouchableOpacity
+                          style={s.removeBtn}
+                          onPress={() => removeKeyEntry(i)}
+                        >
+                          <Feather name="minus-circle" size={20} color="#ef4444" />
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  ))}
+                  <TouchableOpacity
+                    style={[s.addBtn, { borderColor: colors.border }]}
+                    onPress={addKeyEntry}
+                  >
+                    <Feather name="plus" size={14} color={colors.primary} />
+                    <Text style={[s.addBtnTxt, { color: colors.primary }]}>Thêm key</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
             )}
 
-            {/* Widevine fields */}
+            {/* ── Widevine fields ─────────────────────────────────── */}
             {drmMode === "widevine" && (
-              <View style={{ marginTop: 14, gap: 10 }}>
-                <View style={{ gap: 4 }}>
-                  <Text style={[s.fieldLabel, { color: colors.mutedForeground }]}>License Server URL</Text>
+              <View style={{ marginTop: 16, gap: 12 }}>
+                <View style={{ gap: 6 }}>
+                  <Text style={[s.fieldLabel, { color: colors.mutedForeground }]}>
+                    License Server URL
+                  </Text>
                   <TextInput
-                    style={[s.urlInput, { backgroundColor: colors.background, borderColor: colors.border, color: colors.foreground }]}
+                    style={[s.monoInput, { backgroundColor: colors.background, borderColor: colors.border, color: colors.foreground }]}
                     placeholder="https://license.example.com/widevine"
                     placeholderTextColor={colors.mutedForeground}
                     value={wvLicense}
@@ -277,12 +400,14 @@ export default function TestScreen() {
                   />
                 </View>
 
-                <View style={{ gap: 4 }}>
-                  <Text style={[s.fieldLabel, { color: colors.mutedForeground }]}>Headers tùy chỉnh (tuỳ chọn)</Text>
+                <View style={{ gap: 6 }}>
+                  <Text style={[s.fieldLabel, { color: colors.mutedForeground }]}>
+                    Headers tùy chỉnh (tuỳ chọn)
+                  </Text>
                   {wvHeaders.map((h, i) => (
-                    <View key={i} style={[s.keyRow, { alignItems: "center" }]}>
+                    <View key={i} style={[s.keyEntryRow, { alignItems: "center" }]}>
                       <TextInput
-                        style={[s.hexInput, { flex: 1, backgroundColor: colors.background, borderColor: colors.border, color: colors.foreground }]}
+                        style={[s.monoInput, { flex: 1, backgroundColor: colors.background, borderColor: colors.border, color: colors.foreground }]}
                         placeholder="Tên header"
                         placeholderTextColor={colors.mutedForeground}
                         value={h.name}
@@ -292,7 +417,7 @@ export default function TestScreen() {
                       />
                       <Text style={{ color: colors.mutedForeground, marginHorizontal: 4 }}>:</Text>
                       <TextInput
-                        style={[s.hexInput, { flex: 1, backgroundColor: colors.background, borderColor: colors.border, color: colors.foreground }]}
+                        style={[s.monoInput, { flex: 1, backgroundColor: colors.background, borderColor: colors.border, color: colors.foreground }]}
                         placeholder="Giá trị"
                         placeholderTextColor={colors.mutedForeground}
                         value={h.value}
@@ -301,23 +426,29 @@ export default function TestScreen() {
                         autoCorrect={false}
                       />
                       {wvHeaders.length > 1 && (
-                        <TouchableOpacity style={{ marginLeft: 6 }} onPress={() => removeWvHeader(i)}>
-                          <Feather name="minus-circle" size={18} color="#ef4444" />
+                        <TouchableOpacity
+                          style={{ marginLeft: 6 }}
+                          onPress={() => removeWvHeader(i)}
+                        >
+                          <Feather name="minus-circle" size={20} color="#ef4444" />
                         </TouchableOpacity>
                       )}
                     </View>
                   ))}
-                  <TouchableOpacity style={[s.addBtn, { borderColor: colors.border }]} onPress={addWvHeader}>
+                  <TouchableOpacity
+                    style={[s.addBtn, { borderColor: colors.border }]}
+                    onPress={addWvHeader}
+                  >
                     <Feather name="plus" size={14} color={colors.primary} />
                     <Text style={[s.addBtnTxt, { color: colors.primary }]}>Thêm header</Text>
                   </TouchableOpacity>
                 </View>
 
-                <View style={[s.noteBanner, { backgroundColor: "#3b82f620", borderColor: "#3b82f640" }]}>
+                <View style={[s.noteBanner, { backgroundColor: "#3b82f612", borderColor: "#3b82f630" }]}>
                   <Feather name="info" size={12} color="#3b82f6" />
                   <Text style={[s.noteTxt, { color: "#3b82f6" }]}>
-                    Widevine chỉ hoạt động trên Android. iOS dùng FairPlay.
-                    Cần development build để test DRM (không hoạt động trong Expo Go).
+                    Widevine chỉ hoạt động trên Android. iOS dùng FairPlay.{"\n"}
+                    Cần development build — không hoạt động trong Expo Go.
                   </Text>
                 </View>
               </View>
@@ -331,18 +462,31 @@ export default function TestScreen() {
             activeOpacity={0.8}
           >
             <Feather name="play" size={18} color={colors.primaryForeground} />
-            <Text style={[s.testBtnTxt, { color: colors.primaryForeground }]}>Test stream</Text>
+            <Text style={[s.testBtnTxt, { color: colors.primaryForeground }]}>
+              Test stream
+            </Text>
           </TouchableOpacity>
 
           {/* Video player */}
           {activeSource && (
-            <View style={[s.playerCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-              {/* Player header */}
+            <View
+              style={[s.playerCard, { backgroundColor: colors.card, borderColor: colors.border }]}
+            >
+              {/* Status bar */}
               <View style={s.playerHeaderRow}>
-                <View style={s.statusDot}>
-                  <View style={[s.dot, {
-                    backgroundColor: isBuffering ? "#f59e0b" : isPlaying ? "#22c55e" : "#ef4444",
-                  }]} />
+                <View style={s.statusRow}>
+                  <View
+                    style={[
+                      s.dot,
+                      {
+                        backgroundColor: isBuffering
+                          ? "#f59e0b"
+                          : isPlaying
+                          ? "#22c55e"
+                          : "#ef4444",
+                      },
+                    ]}
+                  />
                   <Text style={[s.statusTxt, { color: colors.mutedForeground }]}>
                     {isBuffering ? "Đang tải..." : isPlaying ? "Đang phát" : "Chờ..."}
                   </Text>
@@ -355,13 +499,18 @@ export default function TestScreen() {
                   />
                   <Text style={[s.drmBadgeTxt, { color: DRM_COLORS[drmMode] }]}>
                     {DRM_LABELS[drmMode]}
+                    {drmMode === "clearkey" && ` · ${keyFormat === "hex" ? "Hex" : "Raw"}`}
                   </Text>
                 </View>
                 <TouchableOpacity
                   onPress={() => setIsFullscreen((v) => !v)}
                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 >
-                  <Feather name={isFullscreen ? "minimize-2" : "maximize-2"} size={16} color={colors.mutedForeground} />
+                  <Feather
+                    name={isFullscreen ? "minimize-2" : "maximize-2"}
+                    size={16}
+                    color={colors.mutedForeground}
+                  />
                 </TouchableOpacity>
               </View>
 
@@ -376,28 +525,42 @@ export default function TestScreen() {
                 nativeControls
               />
 
-              {/* URL info */}
-              <Text style={[s.urlInfo, { color: colors.mutedForeground }]} numberOfLines={2}>
+              {/* URL */}
+              <Text
+                style={[s.urlInfo, { color: colors.mutedForeground }]}
+                numberOfLines={2}
+              >
                 {url}
               </Text>
 
-              {/* Player controls */}
+              {/* Controls */}
               <View style={s.controls}>
                 <TouchableOpacity
                   style={[s.controlBtn, { backgroundColor: colors.background, borderColor: colors.border }]}
-                  onPress={() => player.playing ? player.pause() : player.play()}
+                  onPress={() => (player.playing ? player.pause() : player.play())}
                 >
-                  <Feather name={player.playing ? "pause" : "play"} size={18} color={colors.foreground} />
+                  <Feather
+                    name={player.playing ? "pause" : "play"}
+                    size={18}
+                    color={colors.foreground}
+                  />
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[s.controlBtn, { backgroundColor: colors.background, borderColor: colors.border }]}
-                  onPress={() => { player.currentTime = 0; player.play(); }}
+                  onPress={() => {
+                    player.currentTime = 0;
+                    player.play();
+                  }}
                 >
                   <Feather name="rotate-ccw" size={16} color={colors.foreground} />
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[s.controlBtn, { backgroundColor: colors.background, borderColor: colors.border }]}
-                  onPress={() => { setActiveSource(null); setTimeout(() => setActiveSource(activeSource), 100); }}
+                  onPress={() => {
+                    const src = activeSource;
+                    setActiveSource(null);
+                    setTimeout(() => setActiveSource(src), 100);
+                  }}
                 >
                   <Feather name="refresh-cw" size={16} color={colors.foreground} />
                 </TouchableOpacity>
@@ -409,6 +572,10 @@ export default function TestScreen() {
     </View>
   );
 }
+
+// ── Styles ────────────────────────────────────────────────────────────────────
+
+const MONO = Platform.OS === "ios" ? "Menlo" : "monospace";
 
 const s = StyleSheet.create({
   container: { flex: 1 },
@@ -429,25 +596,30 @@ const s = StyleSheet.create({
   cardHeader: { flexDirection: "row", alignItems: "center", gap: 7, marginBottom: 12 },
   cardTitle: { fontFamily: "Inter_600SemiBold", fontSize: 15 },
 
-  urlInput: {
-    borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10,
-    fontSize: 12, fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
-  },
-  hexInput: {
-    borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 9,
-    fontSize: 11, fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+  monoInput: {
+    borderWidth: 1, borderRadius: 10,
+    paddingHorizontal: 12, paddingVertical: 10,
+    fontSize: 12, fontFamily: MONO,
   },
 
-  drmRow: { flexDirection: "row", gap: 8 },
-  drmPill: {
+  pillRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  pill: {
     flexDirection: "row", alignItems: "center", gap: 5,
     borderWidth: 1.5, borderRadius: 20, paddingHorizontal: 12, paddingVertical: 7,
   },
-  drmPillTxt: { fontFamily: "Inter_600SemiBold", fontSize: 12 },
+  pillTxt: { fontFamily: "Inter_600SemiBold", fontSize: 12 },
+
+  formatRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  fmtPill: {
+    borderWidth: 1.5, borderRadius: 16, paddingHorizontal: 10, paddingVertical: 5,
+  },
+  fmtPillTxt: { fontFamily: "Inter_600SemiBold", fontSize: 11 },
 
   fieldLabel: { fontFamily: "Inter_500Medium", fontSize: 12 },
-  keyRow: { flexDirection: "row", gap: 8 },
-  removeBtn: { justifyContent: "center", padding: 4 },
+
+  keyEntryRow: { flexDirection: "row", gap: 8, alignItems: "flex-start" },
+  removeBtn: { paddingTop: 10 },
+
   addBtn: {
     flexDirection: "row", alignItems: "center", gap: 6,
     borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8,
@@ -472,14 +644,17 @@ const s = StyleSheet.create({
     flexDirection: "row", alignItems: "center", gap: 10,
     paddingHorizontal: 14, paddingVertical: 10,
   },
-  statusDot: { flexDirection: "row", alignItems: "center", gap: 6, flex: 1 },
+  statusRow: { flexDirection: "row", alignItems: "center", gap: 6, flex: 1 },
   dot: { width: 8, height: 8, borderRadius: 4 },
   statusTxt: { fontFamily: "Inter_500Medium", fontSize: 12 },
   drmBadge: { flexDirection: "row", alignItems: "center", gap: 4 },
   drmBadgeTxt: { fontFamily: "Inter_700Bold", fontSize: 10 },
 
   videoView: { width: "100%", backgroundColor: "#000" },
-  urlInfo: { fontFamily: "Inter_400Regular", fontSize: 10, paddingHorizontal: 14, paddingVertical: 8, lineHeight: 14 },
+  urlInfo: {
+    fontFamily: "Inter_400Regular", fontSize: 10,
+    paddingHorizontal: 14, paddingVertical: 8, lineHeight: 14,
+  },
 
   controls: { flexDirection: "row", gap: 8, padding: 12, paddingTop: 4 },
   controlBtn: {
