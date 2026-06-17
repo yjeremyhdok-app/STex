@@ -57,6 +57,7 @@
   },
   "dependencies": {
     "expo-clipboard": "^8.0.8",
+    "expo-video": "^3.0.16",
     "react-native-webview": "^13.16.1"
   }
 }
