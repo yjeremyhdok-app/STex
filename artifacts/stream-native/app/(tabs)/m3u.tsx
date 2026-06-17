@@ -2,7 +2,7 @@ import React, { useState, useCallback, useMemo, useRef, useEffect } from "react"
 import {
   View, Text, StyleSheet, TextInput, TouchableOpacity,
   ActivityIndicator, ScrollView, KeyboardAvoidingView, Platform,
-  Alert, FlatList,
+  Alert, FlatList, Dimensions,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useFocusEffect } from "expo-router";
@@ -144,10 +144,10 @@ function ListEditor({ list, onContentChange, onDelete, onRename, colors, insets,
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
-      {/* Top cards — scrollable */}
+      {/* Top cards — scrollable, capped so editor always has room */}
       <ScrollView
         ref={scrollRef}
-        style={{ flexShrink: 1 }}
+        style={{ maxHeight: Dimensions.get("window").height * 0.52 }}
         contentContainerStyle={[se.scroll, { paddingBottom: 8 }]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
