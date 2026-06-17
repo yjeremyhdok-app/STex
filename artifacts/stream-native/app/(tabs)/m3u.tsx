@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from "react";
+import React, { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import {
   View, Text, StyleSheet, TextInput, TouchableOpacity,
   ActivityIndicator, ScrollView, KeyboardAvoidingView, Platform,
@@ -11,13 +11,17 @@ import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
 
 import { useColors } from "@/hooks/useColors";
-import { useM3ULists, parseChannels, M3UList } from "@/hooks/useM3ULists";
+import { useM3ULists, parseChannels, M3UList, M3UChannel } from "@/hooks/useM3ULists";
 
 function entryCount(content: string): number {
   return (content.match(/^#EXTINF/gm) || []).length;
 }
 function lineCount(content: string): number {
   return content ? content.split("\n").length : 0;
+}
+
+function buildChannelRaw(ch: M3UChannel): string {
+  return `${ch.extinf}\n${ch.rawUrl}`;
 }
 
 // ── List editor view ───────────────────────────────────────────────────────────
@@ -29,19 +33,44 @@ interface ListEditorProps {
   onRename: (name: string) => void;
   colors: ReturnType<typeof import("@/hooks/useColors").useColors>;
   insets: { bottom: number; top: number };
+  scrollToTopSignal: number;
 }
 
-function ListEditor({ list, onContentChange, onDelete, onRename, colors, insets }: ListEditorProps) {
+function ListEditor({ list, onContentChange, onDelete, onRename, colors, insets, scrollToTopSignal }: ListEditorProps) {
   const [importUrl, setImportUrl] = useState("");
   const [importing, setImporting] = useState(false);
   const [copied, setCopied] = useState(false);
   const [saving, setSaving] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [newName, setNewName] = useState(list.name);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchActive, setSearchActive] = useState(false);
+
+  const scrollRef = useRef<ScrollView>(null);
+  const searchInputRef = useRef<TextInput>(null);
 
   const entries = entryCount(list.content);
   const lines = lineCount(list.content);
   const channels = useMemo(() => parseChannels(list.content), [list.content]);
+
+  const q = searchQuery.toLowerCase().trim();
+  const filteredChannels = useMemo<M3UChannel[]>(() => {
+    if (!q) return channels;
+    return channels.filter(
+      (ch) => ch.name.toLowerCase().includes(q) || ch.url.toLowerCase().includes(q),
+    );
+  }, [channels, q]);
+
+  const filteredRawContent = useMemo(() => {
+    if (!q) return "";
+    return filteredChannels.map(buildChannelRaw).join("\n\n");
+  }, [filteredChannels, q]);
+
+  useEffect(() => {
+    if (scrollToTopSignal > 0) {
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
+    }
+  }, [scrollToTopSignal]);
 
   const handleChange = (text: string) => {
     setSaving(true);
@@ -99,10 +128,25 @@ function ListEditor({ list, onContentChange, onDelete, onRename, colors, insets 
     setRenaming(false);
   };
 
+  const openSearch = () => {
+    setSearchActive(true);
+    setTimeout(() => searchInputRef.current?.focus(), 80);
+  };
+
+  const closeSearch = () => {
+    setSearchActive(false);
+    setSearchQuery("");
+  };
+
+  const displayedChannels = q ? filteredChannels : channels;
+  const showMore = !q && channels.length > 5;
+  const channelSlice = q ? filteredChannels.slice(0, 30) : channels.slice(0, 5);
+
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
-      {/* Top cards — scrollable but shrink to give room to the editor */}
+      {/* Top cards — scrollable */}
       <ScrollView
+        ref={scrollRef}
         style={{ flexShrink: 1 }}
         contentContainerStyle={[se.scroll, { paddingBottom: 8 }]}
         keyboardShouldPersistTaps="handled"
@@ -189,20 +233,31 @@ function ListEditor({ list, onContentChange, onDelete, onRename, colors, insets 
         </TouchableOpacity>
 
         {/* Channel list preview */}
-        {channels.length > 0 && (
+        {(channels.length > 0 || (q && filteredChannels.length === 0)) && (
           <View style={[se.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 10 }}>
               <Feather name="list" size={14} color="#22c55e" />
-              <Text style={[se.cardTitle, { color: colors.foreground }]}>{channels.length} kênh</Text>
+              <Text style={[se.cardTitle, { color: colors.foreground }]}>
+                {q
+                  ? `${filteredChannels.length} kết quả`
+                  : `${channels.length} kênh`}
+              </Text>
             </View>
-            {channels.slice(0, 5).map((ch, i) => (
-              <View key={i} style={[se.chRow, { borderTopColor: colors.border, borderTopWidth: i > 0 ? StyleSheet.hairlineWidth : 0 }]}>
-                <Text style={[se.chName, { color: colors.foreground }]} numberOfLines={1}>{ch.name}</Text>
-                <Text style={[se.chUrl, { color: colors.mutedForeground }]} numberOfLines={1}>{ch.url}</Text>
-              </View>
-            ))}
-            {channels.length > 5 && (
+            {channelSlice.length === 0 && q ? (
+              <Text style={[se.moreText, { color: colors.mutedForeground }]}>Không tìm thấy kênh nào</Text>
+            ) : (
+              channelSlice.map((ch, i) => (
+                <View key={i} style={[se.chRow, { borderTopColor: colors.border, borderTopWidth: i > 0 ? StyleSheet.hairlineWidth : 0 }]}>
+                  <Text style={[se.chName, { color: colors.foreground }]} numberOfLines={1}>{ch.name}</Text>
+                  <Text style={[se.chUrl, { color: colors.mutedForeground }]} numberOfLines={1}>{ch.url}</Text>
+                </View>
+              ))
+            )}
+            {!q && channels.length > 5 && (
               <Text style={[se.moreText, { color: colors.mutedForeground }]}>+{channels.length - 5} kênh nữa...</Text>
+            )}
+            {q && filteredChannels.length > 30 && (
+              <Text style={[se.moreText, { color: colors.mutedForeground }]}>+{filteredChannels.length - 30} kết quả nữa...</Text>
             )}
           </View>
         )}
@@ -210,22 +265,81 @@ function ListEditor({ list, onContentChange, onDelete, onRename, colors, insets 
 
       {/* Raw editor — sticky header + scrollable content */}
       <View style={[se.editorWrap, { flex: 1, backgroundColor: colors.card, borderColor: colors.border, marginHorizontal: 16, marginBottom: insets.bottom + 16 }]}>
+        {/* Header row: label OR search input */}
         <View style={[se.editorHeader, { borderBottomColor: colors.border }]}>
-          <Feather name="file-text" size={14} color={colors.mutedForeground} />
-          <Text style={[se.editorLabel, { color: colors.mutedForeground }]}>Nội dung M3U thô</Text>
+          {searchActive ? (
+            <>
+              <Feather name="search" size={14} color={colors.primary} />
+              <TextInput
+                ref={searchInputRef}
+                style={[se.searchInput, { color: colors.foreground, flex: 1 }]}
+                placeholder="Tìm kênh..."
+                placeholderTextColor={colors.mutedForeground}
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                autoCapitalize="none"
+                autoCorrect={false}
+                returnKeyType="search"
+              />
+              <TouchableOpacity onPress={closeSearch} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Feather name="x" size={16} color={colors.mutedForeground} />
+              </TouchableOpacity>
+            </>
+          ) : (
+            <>
+              <Feather name="file-text" size={14} color={colors.mutedForeground} />
+              <Text style={[se.editorLabel, { color: colors.mutedForeground, flex: 1 }]}>Nội dung M3U thô</Text>
+              <TouchableOpacity onPress={openSearch} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Feather name="search" size={15} color={colors.mutedForeground} />
+              </TouchableOpacity>
+            </>
+          )}
         </View>
-        <TextInput
-          style={[se.editor, { color: colors.foreground, flex: 1 }]}
-          placeholder={"#EXTM3U\n#EXTINF:-1,Tên kênh\nhttps://stream.url/live.m3u8"}
-          placeholderTextColor={colors.mutedForeground}
-          value={list.content}
-          onChangeText={handleChange}
-          multiline
-          autoCapitalize="none"
-          autoCorrect={false}
-          textAlignVertical="top"
-          scrollEnabled={true}
-        />
+
+        {/* Content: filtered read-only view OR editable full content */}
+        {q ? (
+          <ScrollView
+            style={{ flex: 1 }}
+            contentContainerStyle={{ padding: 14, paddingBottom: 20 }}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            {filteredChannels.length === 0 ? (
+              <Text style={[se.editor, { color: colors.mutedForeground, minHeight: undefined }]}>
+                Không tìm thấy kênh nào khớp với "{searchQuery}"
+              </Text>
+            ) : (
+              filteredChannels.map((ch, i) => (
+                <View key={i} style={{ marginBottom: 14 }}>
+                  <Text style={[se.editor, { color: colors.foreground, minHeight: undefined }]} selectable>
+                    {ch.extinf}
+                  </Text>
+                  {ch.rawUrl !== ch.url && (
+                    <Text style={[se.editor, { color: colors.primary + "aa", minHeight: undefined }]} selectable>
+                      {ch.rawUrl.slice(0, ch.url.length + 1)}
+                    </Text>
+                  )}
+                  <Text style={[se.editor, { color: colors.primary, minHeight: undefined }]} selectable>
+                    {ch.url}
+                  </Text>
+                </View>
+              ))
+            )}
+          </ScrollView>
+        ) : (
+          <TextInput
+            style={[se.editor, { color: colors.foreground, flex: 1 }]}
+            placeholder={"#EXTM3U\n#EXTINF:-1,Tên kênh\nhttps://stream.url/live.m3u8"}
+            placeholderTextColor={colors.mutedForeground}
+            value={list.content}
+            onChangeText={handleChange}
+            multiline
+            autoCapitalize="none"
+            autoCorrect={false}
+            textAlignVertical="top"
+            scrollEnabled={true}
+          />
+        )}
       </View>
     </KeyboardAvoidingView>
   );
@@ -243,9 +357,18 @@ export default function M3UScreen() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showNewList, setShowNewList] = useState(false);
   const [newName, setNewName] = useState("");
+  const [scrollSignals, setScrollSignals] = useState<Record<string, number>>({});
 
   const effectiveId = selectedId ?? lists[0]?.id ?? null;
   const selectedList = lists.find((l) => l.id === effectiveId) ?? null;
+
+  const handleTabPress = (id: string) => {
+    if (id === effectiveId) {
+      setScrollSignals((prev) => ({ ...prev, [id]: (prev[id] ?? 0) + 1 }));
+    } else {
+      setSelectedId(id);
+    }
+  };
 
   const handleCreate = () => {
     const n = newName.trim();
@@ -322,7 +445,7 @@ export default function M3UScreen() {
                     backgroundColor: active ? colors.primary : colors.card,
                     borderColor: active ? colors.primary : colors.border,
                   }]}
-                  onPress={() => setSelectedId(item.id)}
+                  onPress={() => handleTabPress(item.id)}
                 >
                   <Text style={[s.tabTxt, { color: active ? colors.primaryForeground : colors.foreground }]} numberOfLines={1}>
                     {item.name}
@@ -364,6 +487,7 @@ export default function M3UScreen() {
           onRename={(n) => renameList(selectedList.id, n)}
           colors={colors}
           insets={insets}
+          scrollToTopSignal={scrollSignals[selectedList.id] ?? 0}
         />
       )}
     </View>
@@ -421,7 +545,8 @@ const se = StyleSheet.create({
   moreText: { fontFamily: "Inter_400Regular", fontSize: 12, marginTop: 6, textAlign: "center" },
 
   editorWrap: { borderWidth: 1, borderRadius: 14, overflow: "hidden" },
-  editorHeader: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth },
+  editorHeader: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth },
   editorLabel: { fontFamily: "Inter_500Medium", fontSize: 13 },
+  searchInput: { fontFamily: "Inter_400Regular", fontSize: 13, paddingVertical: 0, height: 24 },
   editor: { fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace", fontSize: 12, lineHeight: 18, paddingHorizontal: 14, paddingTop: 12, paddingBottom: 14, minHeight: 280 },
 });
