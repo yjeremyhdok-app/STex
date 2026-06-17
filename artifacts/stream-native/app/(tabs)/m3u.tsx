@@ -5,6 +5,7 @@ import {
   Alert, FlatList,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useFocusEffect } from "expo-router";
 import { Feather } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
@@ -234,7 +235,9 @@ function ListEditor({ list, onContentChange, onDelete, onRename, colors, insets 
 export default function M3UScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
-  const { lists, loading, createList, updateContent, renameList, deleteList } = useM3ULists();
+  const { lists, loading, reload, createList, updateContent, renameList, deleteList } = useM3ULists();
+
+  useFocusEffect(useCallback(() => { reload(); }, [reload]));
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showNewList, setShowNewList] = useState(false);
