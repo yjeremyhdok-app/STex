@@ -69,6 +69,15 @@ export default function TabLayout() {
           ),
         }}
       />
+      <Tabs.Screen
+        name="m3u"
+        options={{
+          title: "M3U",
+          tabBarIcon: ({ color, size }) => (
+            <Feather name="film" size={size} color={color} />
+          ),
+        }}
+      />
     </Tabs>
   );
 }

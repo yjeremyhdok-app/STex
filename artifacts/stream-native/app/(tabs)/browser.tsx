@@ -8,6 +8,7 @@ import { Feather } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
+import { AddChannelModal } from "@/components/AddChannelModal";
 
 interface DetectedLink {
   url: string;
@@ -878,6 +879,7 @@ function NativeBrowser() {
   const panelAnim = useRef(new Animated.Value(0)).current;
   const [jsActive, setJsActive] = useState(false);
   const [netDebug, setNetDebug] = useState<{kind: string; url: string}[]>([]);
+  const [addChModal, setAddChModal] = useState<{ visible: boolean; apiUrl: string; pageUrl: string }>({ visible: false, apiUrl: "", pageUrl: "" });
 
   const totalFound = links.length + keys.length + rawUrls.length;
 
@@ -1447,6 +1449,17 @@ function NativeBrowser() {
                         <Text style={{ fontSize: 11, color: colors.primary, fontWeight: "600" }}>ffmpeg</Text>
                       </TouchableOpacity>
                     </View>
+
+                    {/* Add to channel button */}
+                    <TouchableOpacity
+                      onPress={() => setAddChModal({ visible: true, apiUrl: item.url, pageUrl: url })}
+                      style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+                        backgroundColor: "#22c55e18", borderRadius: 6, paddingVertical: 7,
+                        borderWidth: 1, borderColor: "#22c55e50", marginTop: 2 }}
+                    >
+                      <Feather name="plus-circle" size={13} color="#22c55e" />
+                      <Text style={{ fontSize: 11, color: "#22c55e", fontWeight: "700" }}>Thêm / sửa kênh</Text>
+                    </TouchableOpacity>
                   </View>
                 );
               }}
@@ -1579,6 +1592,17 @@ function NativeBrowser() {
                       <Text style={{ fontSize: 11, color: colors.primary, fontWeight: "600" }}>ffmpeg</Text>
                     </TouchableOpacity>
                   </View>
+
+                  {/* Add to channel */}
+                  <TouchableOpacity
+                    onPress={() => setAddChModal({ visible: true, apiUrl: item.url, pageUrl: url })}
+                    style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+                      backgroundColor: "#22c55e18", borderRadius: 6, paddingVertical: 7,
+                      borderWidth: 1, borderColor: "#22c55e50", marginTop: 2 }}
+                  >
+                    <Feather name="plus-circle" size={13} color="#22c55e" />
+                    <Text style={{ fontSize: 11, color: "#22c55e", fontWeight: "700" }}>Thêm / sửa kênh</Text>
+                  </TouchableOpacity>
                 </View>
               );
               }}
@@ -1731,6 +1755,13 @@ function NativeBrowser() {
             </ScrollView>
           )}
         </Animated.View>
+
+      <AddChannelModal
+        visible={addChModal.visible}
+        onClose={() => setAddChModal((p) => ({ ...p, visible: false }))}
+        prefillApiUrl={addChModal.apiUrl}
+        prefillPageUrl={addChModal.pageUrl}
+      />
     </View>
   );
 }
