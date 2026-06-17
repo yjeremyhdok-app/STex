@@ -8,8 +8,11 @@ import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useColors } from "@/hooks/useColors";
 import { useM3ULists, parseChannels, M3UList, M3UChannel, M3UHeaders } from "@/hooks/useM3ULists";
+
+const STORAGE_KEY = "@m3u_store_v2";
 
 type Step = "list" | "channels" | "edit";
 
@@ -30,7 +33,7 @@ function guessName(pageUrl: string): string {
 export function BrowserAddToM3UModal({ visible, onClose, prefillUrl, prefillPageUrl }: Props) {
   const colors = useColors();
   const insets = useSafeAreaInsets();
-  const { lists, loading, createList, addChannel, updateChannel } = useM3ULists();
+  const { lists, loading, reload, createList, addChannel, updateChannel } = useM3ULists();
 
   const [step, setStep] = useState<Step>("list");
   const [selectedListId, setSelectedListId] = useState<string | null>(null);
@@ -58,17 +61,22 @@ export function BrowserAddToM3UModal({ visible, onClose, prefillUrl, prefillPage
     setToggles({ referer: !!prefillPageUrl, userAgent: false, cookie: false, authorization: false });
     setNewListName("");
     setCreatingList(false);
+    setStep("list");
 
-    // Auto-advance if only 1 list
-    if (lists.length === 1) {
-      setSelectedListId(lists[0].id);
-      setStep("channels");
-    } else if (lists.length === 0) {
-      setStep("list");
-    } else {
-      setStep("list");
-    }
-  }, [visible, lists.length, prefillPageUrl, prefillUrl]);
+    // Reload from storage so we see lists created in other tabs, then auto-advance
+    reload().then(() => {
+      // lists state is set inside reload(); we read fresh from storage directly
+      AsyncStorage.getItem(STORAGE_KEY).then((raw) => {
+        const freshLists: M3UList[] = raw ? (JSON.parse(raw) as { lists: M3UList[] }).lists ?? [] : [];
+        if (freshLists.length === 1) {
+          setSelectedListId(freshLists[0].id);
+          setStep("channels");
+        } else {
+          setStep("list");
+        }
+      }).catch(() => setStep("list"));
+    });
+  }, [visible, prefillPageUrl, prefillUrl, reload]);
 
   const selectedList = lists.find((l) => l.id === selectedListId) ?? null;
   const channels = useMemo(() => selectedList ? parseChannels(selectedList.content) : [], [selectedList]);

@@ -125,30 +125,30 @@ export function useM3ULists() {
   const [lists, setLists] = useState<M3UList[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const raw = await AsyncStorage.getItem(STORAGE_KEY);
-        if (raw) {
-          const parsed = JSON.parse(raw) as { lists: M3UList[] };
-          setLists(parsed.lists || []);
-        } else {
-          // Migrate from legacy single-list storage
-          const legacy = await AsyncStorage.getItem(LEGACY_KEY);
-          if (legacy && legacy.trim()) {
-            const migrated: M3UList = {
-              id: genId(), name: "Danh sách 1", content: legacy,
-              createdAt: Date.now(), updatedAt: Date.now(),
-            };
-            const next = [migrated];
-            setLists(next);
-            await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ lists: next }));
-          }
+  const reload = useCallback(async () => {
+    try {
+      const raw = await AsyncStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as { lists: M3UList[] };
+        setLists(parsed.lists || []);
+      } else {
+        const legacy = await AsyncStorage.getItem(LEGACY_KEY);
+        if (legacy && legacy.trim()) {
+          const migrated: M3UList = {
+            id: genId(), name: "Danh sách 1", content: legacy,
+            createdAt: Date.now(), updatedAt: Date.now(),
+          };
+          const next = [migrated];
+          setLists(next);
+          await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ lists: next }));
         }
-      } catch { /* ignore */ }
-      setLoading(false);
-    })();
+      }
+    } catch { /* ignore */ }
   }, []);
+
+  useEffect(() => {
+    reload().finally(() => setLoading(false));
+  }, [reload]);
 
   const persist = useCallback((next: M3UList[]) => {
     setLists(next);
@@ -187,5 +187,5 @@ export function useM3ULists() {
     persist(lists.map((l) => l.id === listId ? { ...l, content, updatedAt: Date.now() } : l));
   }, [lists, persist]);
 
-  return { lists, loading, createList, updateContent, renameList, deleteList, addChannel, updateChannel };
+  return { lists, loading, reload, createList, updateContent, renameList, deleteList, addChannel, updateChannel };
 }
