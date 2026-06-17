@@ -12,6 +12,10 @@ export interface M3UList {
   content: string;
   createdAt: number;
   updatedAt: number;
+  sourceUrl?: string;          // HTTP URL or Dropbox path used to originally fetch content
+  sourceDropboxPath?: string;  // Dropbox file path (if imported from Dropbox)
+  autoRefresh?: boolean;       // Re-fetch from sourceUrl daily
+  lastRefreshed?: number;      // Timestamp of last successful refresh
 }
 
 export interface M3UHeaders {
@@ -225,5 +229,24 @@ export function useM3ULists() {
     persist(lists.map((l) => l.id === listId ? { ...l, content, updatedAt: Date.now() } : l));
   }, [lists, persist]);
 
-  return { lists, loading, reload, createList, updateContent, renameList, deleteList, addChannel, updateChannel };
+  const setSource = useCallback((id: string, sourceUrl: string, sourceDropboxPath?: string) => {
+    persist(lists.map((l) =>
+      l.id === id ? { ...l, sourceUrl, sourceDropboxPath, updatedAt: Date.now() } : l
+    ));
+  }, [lists, persist]);
+
+  const setAutoRefresh = useCallback((id: string, value: boolean) => {
+    persist(lists.map((l) => l.id === id ? { ...l, autoRefresh: value } : l));
+  }, [lists, persist]);
+
+  const markRefreshed = useCallback((id: string, content: string) => {
+    persist(lists.map((l) =>
+      l.id === id ? { ...l, content, updatedAt: Date.now(), lastRefreshed: Date.now() } : l
+    ));
+  }, [lists, persist]);
+
+  return {
+    lists, loading, reload, createList, updateContent, renameList, deleteList,
+    addChannel, updateChannel, setSource, setAutoRefresh, markRefreshed,
+  };
 }

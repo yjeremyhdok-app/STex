@@ -2,7 +2,7 @@ import React, { useState, useCallback, useMemo, useRef, useEffect } from "react"
 import {
   View, Text, StyleSheet, TextInput, TouchableOpacity,
   ActivityIndicator, ScrollView, KeyboardAvoidingView, Platform,
-  Alert, FlatList, Dimensions,
+  Alert, FlatList, Dimensions, Switch,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useFocusEffect } from "expo-router";
@@ -12,6 +12,8 @@ import * as Haptics from "expo-haptics";
 
 import { useColors } from "@/hooks/useColors";
 import { useM3ULists, parseChannels, M3UList, M3UChannel } from "@/hooks/useM3ULists";
+import { getDropboxToken, dropboxDownload } from "@/hooks/useDropbox";
+import DropboxFilePicker from "@/components/DropboxFilePicker";
 
 function entryCount(content: string): number {
   return (content.match(/^#EXTINF/gm) || []).length;
@@ -24,6 +26,18 @@ function buildChannelRaw(ch: M3UChannel): string {
   return `${ch.extinf}\n${ch.rawUrl}`;
 }
 
+async function checkUrl(url: string, timeoutMs = 6000): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), timeoutMs);
+    const res = await fetch(url, { method: "HEAD", signal: controller.signal });
+    clearTimeout(tid);
+    return res.ok || res.status === 405 || res.status === 206 || res.status === 301 || res.status === 302;
+  } catch {
+    return false;
+  }
+}
+
 // ── List editor view ───────────────────────────────────────────────────────────
 
 interface ListEditorProps {
@@ -31,23 +45,45 @@ interface ListEditorProps {
   onContentChange: (content: string) => void;
   onDelete: () => void;
   onRename: (name: string) => void;
+  onSetSource: (sourceUrl: string, dropboxPath?: string) => void;
+  onSetAutoRefresh: (value: boolean) => void;
+  onMarkRefreshed: (content: string) => void;
   colors: ReturnType<typeof import("@/hooks/useColors").useColors>;
   insets: { bottom: number; top: number };
   scrollToTopSignal: number;
 }
 
-function ListEditor({ list, onContentChange, onDelete, onRename, colors, insets, scrollToTopSignal }: ListEditorProps) {
+interface CheckState {
+  checking: boolean;
+  checked: number;
+  total: number;
+  ok: number;
+  fail: number;
+  done: boolean;
+}
+
+function ListEditor({
+  list, onContentChange, onDelete, onRename,
+  onSetSource, onSetAutoRefresh, onMarkRefreshed,
+  colors, insets, scrollToTopSignal,
+}: ListEditorProps) {
   const [importUrl, setImportUrl] = useState("");
   const [importing, setImporting] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [copied, setCopied] = useState(false);
   const [saving, setSaving] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [newName, setNewName] = useState(list.name);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchActive, setSearchActive] = useState(false);
+  const [showDropbox, setShowDropbox] = useState(false);
+  const [checkState, setCheckState] = useState<CheckState>({
+    checking: false, checked: 0, total: 0, ok: 0, fail: 0, done: false,
+  });
 
   const scrollRef = useRef<ScrollView>(null);
   const searchInputRef = useRef<TextInput>(null);
+  const checkCancelRef = useRef(false);
 
   const entries = entryCount(list.content);
   const lines = lineCount(list.content);
@@ -61,10 +97,7 @@ function ListEditor({ list, onContentChange, onDelete, onRename, colors, insets,
     );
   }, [channels, q]);
 
-  const filteredRawContent = useMemo(() => {
-    if (!q) return "";
-    return filteredChannels.map(buildChannelRaw).join("\n\n");
-  }, [filteredChannels, q]);
+  const channelSlice = q ? filteredChannels.slice(0, 30) : channels.slice(0, 5);
 
   useEffect(() => {
     if (scrollToTopSignal > 0) {
@@ -72,10 +105,51 @@ function ListEditor({ list, onContentChange, onDelete, onRename, colors, insets,
     }
   }, [scrollToTopSignal]);
 
+  // Auto-refresh if >24h since last refresh
+  useEffect(() => {
+    if (!list.autoRefresh || !list.sourceUrl) return;
+    const DAY = 24 * 60 * 60 * 1000;
+    if (Date.now() - (list.lastRefreshed ?? 0) > DAY) {
+      handleRefresh();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleChange = (text: string) => {
     setSaving(true);
     onContentChange(text);
     setTimeout(() => setSaving(false), 300);
+  };
+
+  const handleRefresh = async () => {
+    if (refreshing) return;
+    const source = list.sourceUrl;
+    if (!source) return;
+    setRefreshing(true);
+    try {
+      let content = "";
+      if (list.sourceDropboxPath) {
+        const token = await getDropboxToken();
+        if (!token) {
+          Alert.alert("Chưa kết nối Dropbox", "Mở Dropbox để kết nối lại");
+          return;
+        }
+        content = await dropboxDownload(token, list.sourceDropboxPath);
+      } else {
+        const res = await fetch(source, {
+          headers: { "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15" },
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        content = await res.text();
+      }
+      onMarkRefreshed(content);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (e: unknown) {
+      Alert.alert("Không làm mới được", e instanceof Error ? e.message : "Lỗi không xác định");
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   const handleImportUrl = async () => {
@@ -93,6 +167,7 @@ function ListEditor({ list, onContentChange, onDelete, onRename, colors, insets,
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const text = await res.text();
       onContentChange(text);
+      onSetSource(url);
       setImportUrl("");
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e: unknown) {
@@ -128,6 +203,38 @@ function ListEditor({ list, onContentChange, onDelete, onRename, colors, insets,
     setRenaming(false);
   };
 
+  const handleDropboxImport = (content: string, name: string, dropboxPath: string) => {
+    setShowDropbox(false);
+    onContentChange(content);
+    onSetSource(dropboxPath, dropboxPath);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  };
+
+  const handleCheckChannels = async () => {
+    if (checkState.checking || channels.length === 0) return;
+    checkCancelRef.current = false;
+    setCheckState({ checking: true, checked: 0, total: channels.length, ok: 0, fail: 0, done: false });
+
+    const BATCH = 8;
+    let okCount = 0;
+    let failCount = 0;
+
+    for (let i = 0; i < channels.length; i += BATCH) {
+      if (checkCancelRef.current) break;
+      const batch = channels.slice(i, i + BATCH);
+      const results = await Promise.all(batch.map((ch) => checkUrl(ch.url)));
+      results.forEach((ok) => (ok ? okCount++ : failCount++));
+      const newChecked = i + batch.length;
+      setCheckState({
+        checking: true, checked: newChecked, total: channels.length,
+        ok: okCount, fail: failCount, done: false,
+      });
+    }
+
+    setCheckState({ checking: false, checked: channels.length, total: channels.length, ok: okCount, fail: failCount, done: true });
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  };
+
   const openSearch = () => {
     setSearchActive(true);
     setTimeout(() => searchInputRef.current?.focus(), 80);
@@ -138,9 +245,21 @@ function ListEditor({ list, onContentChange, onDelete, onRename, colors, insets,
     setSearchQuery("");
   };
 
-  const displayedChannels = q ? filteredChannels : channels;
-  const showMore = !q && channels.length > 5;
-  const channelSlice = q ? filteredChannels.slice(0, 30) : channels.slice(0, 5);
+  const sourceName = list.sourceDropboxPath
+    ? list.sourceDropboxPath.split("/").pop() ?? "Dropbox"
+    : list.sourceUrl
+      ? (() => { try { return new URL(list.sourceUrl).hostname; } catch { return list.sourceUrl.slice(0, 30); } })()
+      : null;
+
+  const lastRefreshedText = list.lastRefreshed
+    ? (() => {
+        const diff = Date.now() - list.lastRefreshed;
+        const h = Math.floor(diff / 3600000);
+        if (h < 1) return "vừa xong";
+        if (h < 24) return `${h}g trước`;
+        return `${Math.floor(h / 24)}ng trước`;
+      })()
+    : null;
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
@@ -172,33 +291,85 @@ function ListEditor({ list, onContentChange, onDelete, onRename, colors, insets,
               </TouchableOpacity>
             </View>
           ) : (
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-              <View style={{ flex: 1 }}>
-                <Text style={[se.nameText, { color: colors.foreground }]} numberOfLines={1}>{list.name}</Text>
-                <Text style={[se.nameMeta, { color: colors.mutedForeground }]}>
-                  {entries > 0 ? `${entries} kênh · ` : ""}{lines} dòng
-                  {saving ? " · Đang lưu..." : ""}
-                </Text>
+            <View style={{ gap: 10 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+                <View style={{ flex: 1 }}>
+                  <Text style={[se.nameText, { color: colors.foreground }]} numberOfLines={1}>{list.name}</Text>
+                  <Text style={[se.nameMeta, { color: colors.mutedForeground }]}>
+                    {entries > 0 ? `${entries} kênh · ` : ""}{lines} dòng
+                    {saving ? " · Đang lưu..." : ""}
+                  </Text>
+                </View>
+                <TouchableOpacity style={se.iconBtn} onPress={() => setRenaming(true)}>
+                  <Feather name="edit-2" size={16} color={colors.mutedForeground} />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[se.copyBtn, { borderColor: copied ? "#22c55e" : colors.primary, backgroundColor: copied ? "#22c55e" : colors.primary }]}
+                  onPress={handleCopy}
+                >
+                  <Feather name={copied ? "check" : "copy"} size={14} color="#fff" />
+                  <Text style={[se.copyTxt, { color: "#fff" }]}>{copied ? "Đã chép!" : "Sao chép"}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={se.iconBtn} onPress={() => Alert.alert("Xoá danh sách?", `Xoá "${list.name}"?`, [
+                  { text: "Huỷ", style: "cancel" },
+                  { text: "Xoá", style: "destructive", onPress: onDelete },
+                ])}>
+                  <Feather name="trash-2" size={16} color="#ef4444" />
+                </TouchableOpacity>
               </View>
-              <TouchableOpacity style={se.iconBtn} onPress={() => setRenaming(true)}>
-                <Feather name="edit-2" size={16} color={colors.mutedForeground} />
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[se.copyBtn, { borderColor: copied ? "#22c55e" : colors.primary, backgroundColor: copied ? "#22c55e" : colors.primary }]}
-                onPress={handleCopy}
-              >
-                <Feather name={copied ? "check" : "copy"} size={14} color="#fff" />
-                <Text style={[se.copyTxt, { color: "#fff" }]}>{copied ? "Đã chép!" : "Sao chép"}</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={se.iconBtn} onPress={() => Alert.alert("Xoá danh sách?", `Xoá "${list.name}"?`, [
-                { text: "Huỷ", style: "cancel" },
-                { text: "Xoá", style: "destructive", onPress: onDelete },
-              ])}>
-                <Feather name="trash-2" size={16} color="#ef4444" />
-              </TouchableOpacity>
+
+              {/* Source bar */}
+              {sourceName && (
+                <View style={[se.sourceBar, { backgroundColor: colors.background, borderColor: colors.border }]}>
+                  <Feather
+                    name={list.sourceDropboxPath ? "box" : "link"}
+                    size={12}
+                    color={list.sourceDropboxPath ? "#0061ff" : colors.primary}
+                  />
+                  <Text style={[se.sourceName, { color: colors.mutedForeground, flex: 1 }]} numberOfLines={1}>
+                    {sourceName}
+                  </Text>
+                  {lastRefreshedText && (
+                    <Text style={[se.sourceTime, { color: colors.mutedForeground }]}>{lastRefreshedText}</Text>
+                  )}
+                  <TouchableOpacity onPress={handleRefresh} disabled={refreshing}>
+                    {refreshing
+                      ? <ActivityIndicator size="small" color={colors.primary} style={{ width: 20 }} />
+                      : <Feather name="refresh-cw" size={14} color={colors.primary} />}
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              {/* Auto-refresh toggle — only show if source exists */}
+              {list.sourceUrl && (
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                  <Feather name="clock" size={12} color={colors.mutedForeground} />
+                  <Text style={[se.autoLabel, { color: colors.mutedForeground, flex: 1 }]}>Tự động làm mới hằng ngày</Text>
+                  <Switch
+                    value={!!list.autoRefresh}
+                    onValueChange={(v) => onSetAutoRefresh(v)}
+                    trackColor={{ false: colors.border, true: colors.primary }}
+                    thumbColor="#fff"
+                    style={{ transform: [{ scaleX: 0.8 }, { scaleY: 0.8 }] }}
+                  />
+                </View>
+              )}
             </View>
           )}
         </View>
+
+        {/* Dropbox connect */}
+        <TouchableOpacity
+          style={[se.dropboxBtn, { backgroundColor: "#0061ff15", borderColor: "#0061ff40" }]}
+          onPress={() => setShowDropbox(true)}
+          activeOpacity={0.75}
+        >
+          <Feather name="box" size={16} color="#0061ff" />
+          <Text style={[se.dropboxTxt, { color: "#0061ff" }]}>
+            {list.sourceDropboxPath ? "Đổi file Dropbox" : "Mở từ Dropbox"}
+          </Text>
+          <Feather name="chevron-right" size={14} color="#0061ff80" />
+        </TouchableOpacity>
 
         {/* Import from URL */}
         <View style={[se.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -233,16 +404,50 @@ function ListEditor({ list, onContentChange, onDelete, onRename, colors, insets,
         </TouchableOpacity>
 
         {/* Channel list preview */}
-        {(channels.length > 0 || (q && filteredChannels.length === 0)) && (
+        {(channels.length > 0) && (
           <View style={[se.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            {/* Card header with check button */}
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 10 }}>
               <Feather name="list" size={14} color="#22c55e" />
-              <Text style={[se.cardTitle, { color: colors.foreground }]}>
-                {q
-                  ? `${filteredChannels.length} kết quả`
-                  : `${channels.length} kênh`}
+              <Text style={[se.cardTitle, { color: colors.foreground, flex: 1 }]}>
+                {q ? `${filteredChannels.length} kết quả` : `${channels.length} kênh`}
               </Text>
+
+              {/* Channel check result badge */}
+              {checkState.done && !checkState.checking && (
+                <View style={[se.checkBadge, { backgroundColor: "#22c55e20" }]}>
+                  <Feather name="check-circle" size={10} color="#22c55e" />
+                  <Text style={[se.checkBadgeTxt, { color: "#22c55e" }]}>{checkState.ok}</Text>
+                  {checkState.fail > 0 && (
+                    <>
+                      <Text style={[se.checkBadgeTxt, { color: colors.mutedForeground }]}>·</Text>
+                      <Feather name="x-circle" size={10} color="#ef4444" />
+                      <Text style={[se.checkBadgeTxt, { color: "#ef4444" }]}>{checkState.fail}</Text>
+                    </>
+                  )}
+                </View>
+              )}
+
+              {/* Checking progress */}
+              {checkState.checking && (
+                <Text style={[se.checkBadgeTxt, { color: colors.mutedForeground }]}>
+                  {checkState.checked}/{checkState.total}
+                </Text>
+              )}
+
+              {/* Check button */}
+              <TouchableOpacity
+                style={[se.checkBtn, { borderColor: colors.border, backgroundColor: colors.background }]}
+                onPress={checkState.checking ? () => { checkCancelRef.current = true; } : handleCheckChannels}
+                disabled={channels.length === 0}
+              >
+                {checkState.checking
+                  ? <><ActivityIndicator size="small" color={colors.primary} style={{ marginRight: 4 }} /><Text style={[se.checkBtnTxt, { color: "#ef4444" }]}>Dừng</Text></>
+                  : <><Feather name="wifi" size={12} color={colors.primary} /><Text style={[se.checkBtnTxt, { color: colors.primary }]}>Kiểm tra</Text></>}
+              </TouchableOpacity>
             </View>
+
+            {/* Channel rows */}
             {channelSlice.length === 0 && q ? (
               <Text style={[se.moreText, { color: colors.mutedForeground }]}>Không tìm thấy kênh nào</Text>
             ) : (
@@ -265,7 +470,7 @@ function ListEditor({ list, onContentChange, onDelete, onRename, colors, insets,
 
       {/* Raw editor — sticky header + scrollable content */}
       <View style={[se.editorWrap, { flex: 1, backgroundColor: colors.card, borderColor: colors.border, marginHorizontal: 16, marginBottom: insets.bottom + 16 }]}>
-        {/* Header row: label OR search input */}
+        {/* Header: label OR search input */}
         <View style={[se.editorHeader, { borderBottomColor: colors.border }]}>
           {searchActive ? (
             <>
@@ -296,7 +501,7 @@ function ListEditor({ list, onContentChange, onDelete, onRename, colors, insets,
           )}
         </View>
 
-        {/* Content: filtered read-only view OR editable full content */}
+        {/* Content: filtered read-only OR editable */}
         {q ? (
           <ScrollView
             style={{ flex: 1 }}
@@ -314,11 +519,6 @@ function ListEditor({ list, onContentChange, onDelete, onRename, colors, insets,
                   <Text style={[se.editor, { color: colors.foreground, minHeight: undefined }]} selectable>
                     {ch.extinf}
                   </Text>
-                  {ch.rawUrl !== ch.url && (
-                    <Text style={[se.editor, { color: colors.primary + "aa", minHeight: undefined }]} selectable>
-                      {ch.rawUrl.slice(0, ch.url.length + 1)}
-                    </Text>
-                  )}
                   <Text style={[se.editor, { color: colors.primary, minHeight: undefined }]} selectable>
                     {ch.url}
                   </Text>
@@ -341,6 +541,13 @@ function ListEditor({ list, onContentChange, onDelete, onRename, colors, insets,
           />
         )}
       </View>
+
+      {/* Dropbox file picker modal */}
+      <DropboxFilePicker
+        visible={showDropbox}
+        onClose={() => setShowDropbox(false)}
+        onImport={handleDropboxImport}
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -350,7 +557,10 @@ function ListEditor({ list, onContentChange, onDelete, onRename, colors, insets,
 export default function M3UScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
-  const { lists, loading, reload, createList, updateContent, renameList, deleteList } = useM3ULists();
+  const {
+    lists, loading, reload, createList, updateContent, renameList, deleteList,
+    setSource, setAutoRefresh, markRefreshed,
+  } = useM3ULists();
 
   useFocusEffect(useCallback(() => { reload(); }, [reload]));
 
@@ -447,6 +657,9 @@ export default function M3UScreen() {
                   }]}
                   onPress={() => handleTabPress(item.id)}
                 >
+                  {item.sourceDropboxPath && (
+                    <Feather name="box" size={10} color={active ? colors.primaryForeground + "cc" : "#0061ff"} />
+                  )}
                   <Text style={[s.tabTxt, { color: active ? colors.primaryForeground : colors.foreground }]} numberOfLines={1}>
                     {item.name}
                   </Text>
@@ -485,6 +698,9 @@ export default function M3UScreen() {
           onContentChange={(c) => updateContent(selectedList.id, c)}
           onDelete={() => handleDelete(selectedList.id)}
           onRename={(n) => renameList(selectedList.id, n)}
+          onSetSource={(url, dp) => setSource(selectedList.id, url, dp)}
+          onSetAutoRefresh={(v) => setAutoRefresh(selectedList.id, v)}
+          onMarkRefreshed={(c) => markRefreshed(selectedList.id, c)}
           colors={colors}
           insets={insets}
           scrollToTopSignal={scrollSignals[selectedList.id] ?? 0}
@@ -507,7 +723,7 @@ const s = StyleSheet.create({
   createTxt: { fontFamily: "Inter_600SemiBold", fontSize: 14 },
 
   tabsWrapper: { borderBottomWidth: StyleSheet.hairlineWidth },
-  tab: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 14, paddingVertical: 7, borderRadius: 20, borderWidth: 1, maxWidth: 160 },
+  tab: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 14, paddingVertical: 7, borderRadius: 20, borderWidth: 1, maxWidth: 160 },
   tabTxt: { fontFamily: "Inter_600SemiBold", fontSize: 13, flexShrink: 1 },
   tabBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 10 },
   tabBadgeTxt: { fontFamily: "Inter_700Bold", fontSize: 10 },
@@ -531,6 +747,20 @@ const se = StyleSheet.create({
   copyBtn: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 16 },
   copyTxt: { fontFamily: "Inter_600SemiBold", fontSize: 12 },
 
+  sourceBar: {
+    flexDirection: "row", alignItems: "center", gap: 8,
+    borderWidth: 1, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 7,
+  },
+  sourceName: { fontFamily: "Inter_400Regular", fontSize: 12 },
+  sourceTime: { fontFamily: "Inter_400Regular", fontSize: 11 },
+  autoLabel: { fontFamily: "Inter_400Regular", fontSize: 12 },
+
+  dropboxBtn: {
+    flexDirection: "row", alignItems: "center", gap: 10,
+    borderWidth: 1, borderRadius: 14, padding: 14,
+  },
+  dropboxTxt: { fontFamily: "Inter_600SemiBold", fontSize: 15, flex: 1 },
+
   card: { borderWidth: 1, borderRadius: 14, padding: 14 },
   cardTitle: { fontFamily: "Inter_600SemiBold", fontSize: 15 },
   urlInput: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, height: 44, fontSize: 12, fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace" },
@@ -538,6 +768,17 @@ const se = StyleSheet.create({
   pasteBtn: { flexDirection: "row", alignItems: "center", gap: 10, borderWidth: 1, borderRadius: 14, padding: 14 },
   pasteTxt: { fontFamily: "Inter_600SemiBold", fontSize: 15, flex: 1 },
   pasteHint: { fontFamily: "Inter_400Regular", fontSize: 12 },
+
+  checkBtn: {
+    flexDirection: "row", alignItems: "center", gap: 4,
+    borderWidth: 1, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 5,
+  },
+  checkBtnTxt: { fontFamily: "Inter_600SemiBold", fontSize: 11 },
+  checkBadge: {
+    flexDirection: "row", alignItems: "center", gap: 3,
+    borderRadius: 10, paddingHorizontal: 7, paddingVertical: 3,
+  },
+  checkBadgeTxt: { fontFamily: "Inter_700Bold", fontSize: 10 },
 
   chRow: { paddingVertical: 8, gap: 2 },
   chName: { fontFamily: "Inter_500Medium", fontSize: 14 },
