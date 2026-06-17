@@ -9,7 +9,7 @@ import * as Haptics from "expo-haptics";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useColors } from "@/hooks/useColors";
-import { useM3ULists, parseChannels, M3UList, M3UChannel, M3UHeaders } from "@/hooks/useM3ULists";
+import { useM3ULists, parseChannels, M3UList, M3UChannel, M3UHeaders, buildHeadersPreview } from "@/hooks/useM3ULists";
 
 type Step = "list" | "channels" | "edit";
 
@@ -415,24 +415,26 @@ export function BrowserAddToM3UModal({ visible, onClose, prefillUrl, prefillPage
                 };
                 const on = toggles[key];
                 return (
-                  <View key={key} style={[s.headerRow, { backgroundColor: colors.card, borderColor: on ? colors.primary + "60" : colors.border }]}>
-                    <TouchableOpacity style={s.headerToggle} onPress={() => setToggle(key, !on)} activeOpacity={0.75}>
-                      <View style={[s.checkbox, { borderColor: on ? colors.primary : colors.border, backgroundColor: on ? colors.primary : "transparent" }]}>
-                        {on && <Feather name="check" size={11} color={colors.primaryForeground} />}
-                      </View>
-                      <Text style={[s.headerLabel, { color: on ? colors.foreground : colors.mutedForeground }]}>{labels[key]}</Text>
-                    </TouchableOpacity>
-                    {on && (
-                      <TextInput
-                        style={[s.headerInput, s.mono, { backgroundColor: colors.background, borderColor: colors.border, color: colors.foreground }]}
-                        placeholder={placeholders[key]}
-                        placeholderTextColor={colors.mutedForeground}
-                        value={headers[key]}
-                        onChangeText={(v) => setHeader(key, v)}
-                        autoCapitalize="none"
-                        autoCorrect={false}
-                      />
-                    )}
+                  <View key={key} style={{ opacity: on ? 1 : 0.4 }}>
+                    <View style={[s.headerRow, { backgroundColor: colors.card, borderColor: on ? colors.primary + "60" : colors.border }]}>
+                      <TouchableOpacity style={s.headerToggle} onPress={() => setToggle(key, !on)} activeOpacity={0.75}>
+                        <View style={[s.checkbox, { borderColor: on ? colors.primary : colors.border, backgroundColor: on ? colors.primary : "transparent" }]}>
+                          {on && <Feather name="check" size={11} color={colors.primaryForeground} />}
+                        </View>
+                        <Text style={[s.headerLabel, { color: on ? colors.foreground : colors.mutedForeground }]}>{labels[key]}</Text>
+                      </TouchableOpacity>
+                      {on && (
+                        <TextInput
+                          style={[s.headerInput, s.mono, { backgroundColor: colors.background, borderColor: colors.border, color: colors.foreground }]}
+                          placeholder={placeholders[key]}
+                          placeholderTextColor={colors.mutedForeground}
+                          value={headers[key]}
+                          onChangeText={(v) => setHeader(key, v)}
+                          autoCapitalize="none"
+                          autoCorrect={false}
+                        />
+                      )}
+                    </View>
                   </View>
                 );
               })}
@@ -441,14 +443,13 @@ export function BrowserAddToM3UModal({ visible, onClose, prefillUrl, prefillPage
               {(toggles.referer || toggles.userAgent || toggles.cookie || toggles.authorization) && (
                 <View style={[s.preview, { backgroundColor: colors.card, borderColor: colors.border }]}>
                   <Text style={[s.previewLabel, { color: colors.mutedForeground }]}>URL SẼ LƯU</Text>
-                  <Text style={[s.previewCode, s.mono, { color: colors.primary }]} numberOfLines={4}>
-                    {url.trim()}
-                    {[
-                      toggles.referer && headers.referer ? `|Referer=${headers.referer}` : "",
-                      toggles.userAgent && headers.userAgent ? `&User-Agent=${headers.userAgent}` : "",
-                      toggles.cookie && headers.cookie ? `&Cookie=${headers.cookie}` : "",
-                      toggles.authorization && headers.authorization ? `&Authorization=${headers.authorization}` : "",
-                    ].filter(Boolean).join("").replace(/^\|/, "|").replace(/^&/, "|")}
+                  <Text style={[s.previewCode, s.mono, { color: colors.primary }]}>
+                    {buildHeadersPreview(url.trim(), {
+                      referer: toggles.referer ? headers.referer : "",
+                      userAgent: toggles.userAgent ? headers.userAgent : "",
+                      cookie: toggles.cookie ? headers.cookie : "",
+                      authorization: toggles.authorization ? headers.authorization : "",
+                    })}
                   </Text>
                 </View>
               )}

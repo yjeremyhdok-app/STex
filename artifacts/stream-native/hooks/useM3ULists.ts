@@ -49,6 +49,24 @@ function parseHeaderSuffix(suffix: string): M3UHeaders {
   return h;
 }
 
+function parseExtvlcopt(lines: string[], fromLine: number, toLine: number): M3UHeaders {
+  const h: M3UHeaders = { referer: "", userAgent: "", cookie: "", authorization: "" };
+  for (let i = fromLine; i < toLine; i++) {
+    const l = lines[i].trim();
+    if (!l.startsWith("#EXTVLCOPT:")) continue;
+    const rest = l.slice("#EXTVLCOPT:".length);
+    const eq = rest.indexOf("=");
+    if (eq < 0) continue;
+    const k = rest.slice(0, eq).toLowerCase().trim();
+    const v = rest.slice(eq + 1).trim();
+    if (k === "http-referrer") h.referer = v;
+    else if (k === "http-user-agent") h.userAgent = v;
+    else if (k === "http-headers-cookie" || k === "cookie") h.cookie = v;
+    else if (k === "http-headers-authorization" || k === "authorization") h.authorization = v;
+  }
+  return h;
+}
+
 export function parseChannels(content: string): M3UChannel[] {
   const lines = content.split("\n");
   const channels: M3UChannel[] = [];
@@ -74,20 +92,16 @@ export function parseChannels(content: string): M3UChannel[] {
     const url = pipeIdx >= 0 ? rawUrl.slice(0, pipeIdx) : rawUrl;
     const suffix = pipeIdx >= 0 ? rawUrl.slice(pipeIdx + 1) : "";
 
-    channels.push({ name, url, rawUrl, headers: parseHeaderSuffix(suffix), extinf: line, extinfLine, urlLine });
+    // Parse headers: prefer #EXTVLCOPT lines; fall back to pipe-suffix for old entries
+    const vlcHeaders = parseExtvlcopt(lines, extinfLine + 1, urlLine);
+    const hasVlc = !!(vlcHeaders.referer || vlcHeaders.userAgent || vlcHeaders.cookie || vlcHeaders.authorization);
+    const headers = hasVlc ? vlcHeaders : parseHeaderSuffix(suffix);
+
+    channels.push({ name, url, rawUrl, headers, extinf: line, extinfLine, urlLine });
     if (urlLine >= 0) i = urlLine;
   }
 
   return channels;
-}
-
-export function buildUrl(baseUrl: string, headers: M3UHeaders): string {
-  const parts: string[] = [];
-  if (headers.referer) parts.push(`Referer=${headers.referer}`);
-  if (headers.userAgent) parts.push(`User-Agent=${headers.userAgent}`);
-  if (headers.cookie) parts.push(`Cookie=${headers.cookie}`);
-  if (headers.authorization) parts.push(`Authorization=${headers.authorization}`);
-  return parts.length ? `${baseUrl}|${parts.join("&")}` : baseUrl;
 }
 
 function buildExtinf(oldExtinf: string, newName: string): string {
@@ -95,8 +109,28 @@ function buildExtinf(oldExtinf: string, newName: string): string {
   return lastComma >= 0 ? oldExtinf.slice(0, lastComma + 1) + newName : `#EXTINF:-1,${newName}`;
 }
 
+export function buildChannelBlock(extinf: string, url: string, headers: M3UHeaders): string {
+  const blockLines: string[] = [extinf];
+  if (headers.referer) blockLines.push(`#EXTVLCOPT:http-referrer=${headers.referer}`);
+  if (headers.userAgent) blockLines.push(`#EXTVLCOPT:http-user-agent=${headers.userAgent}`);
+  if (headers.cookie) blockLines.push(`#EXTVLCOPT:http-headers-cookie=${headers.cookie}`);
+  if (headers.authorization) blockLines.push(`#EXTVLCOPT:http-headers-authorization=${headers.authorization}`);
+  blockLines.push(url);
+  return blockLines.join("\n");
+}
+
+export function buildHeadersPreview(url: string, headers: M3UHeaders): string {
+  const blockLines: string[] = [];
+  if (headers.referer) blockLines.push(`#EXTVLCOPT:http-referrer=${headers.referer}`);
+  if (headers.userAgent) blockLines.push(`#EXTVLCOPT:http-user-agent=${headers.userAgent}`);
+  if (headers.cookie) blockLines.push(`#EXTVLCOPT:http-headers-cookie=${headers.cookie}`);
+  if (headers.authorization) blockLines.push(`#EXTVLCOPT:http-headers-authorization=${headers.authorization}`);
+  blockLines.push(url);
+  return blockLines.join("\n");
+}
+
 export function addChannelToContent(content: string, name: string, url: string, headers: M3UHeaders): string {
-  const block = `#EXTINF:-1,${name}\n${buildUrl(url, headers)}`;
+  const block = buildChannelBlock(`#EXTINF:-1,${name}`, url, headers);
   const base = content.trim();
   if (!base) return `#EXTM3U\n${block}`;
   return `${base}\n${block}`;
@@ -104,11 +138,11 @@ export function addChannelToContent(content: string, name: string, url: string, 
 
 export function updateChannelInContent(content: string, channel: M3UChannel, name: string, url: string, headers: M3UHeaders): string {
   const lines = content.split("\n");
-  if (channel.extinfLine >= 0 && channel.extinfLine < lines.length) {
-    lines[channel.extinfLine] = buildExtinf(channel.extinf, name);
-  }
-  if (channel.urlLine >= 0 && channel.urlLine < lines.length) {
-    lines[channel.urlLine] = buildUrl(url, headers);
+  const newExtinf = buildExtinf(channel.extinf, name);
+  const block = buildChannelBlock(newExtinf, url, headers);
+  const blockLines = block.split("\n");
+  if (channel.extinfLine >= 0 && channel.urlLine >= channel.extinfLine) {
+    lines.splice(channel.extinfLine, channel.urlLine - channel.extinfLine + 1, ...blockLines);
   }
   return lines.join("\n");
 }
