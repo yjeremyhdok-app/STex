@@ -101,9 +101,10 @@ function ListEditor({ list, onContentChange, onDelete, onRename, colors, insets 
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
+      {/* Top cards — scrollable but shrink to give room to the editor */}
       <ScrollView
-        style={{ flex: 1 }}
-        contentContainerStyle={[se.scroll, { paddingBottom: insets.bottom + 100 }]}
+        style={{ flexShrink: 1 }}
+        contentContainerStyle={[se.scroll, { paddingBottom: 8 }]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
@@ -205,27 +206,27 @@ function ListEditor({ list, onContentChange, onDelete, onRename, colors, insets 
             )}
           </View>
         )}
-
-        {/* Raw editor */}
-        <View style={[se.editorWrap, { backgroundColor: colors.card, borderColor: colors.border }]}>
-          <View style={[se.editorHeader, { borderBottomColor: colors.border }]}>
-            <Feather name="file-text" size={14} color={colors.mutedForeground} />
-            <Text style={[se.editorLabel, { color: colors.mutedForeground }]}>Nội dung M3U thô</Text>
-          </View>
-          <TextInput
-            style={[se.editor, { color: colors.foreground }]}
-            placeholder={"#EXTM3U\n#EXTINF:-1,Tên kênh\nhttps://stream.url/live.m3u8"}
-            placeholderTextColor={colors.mutedForeground}
-            value={list.content}
-            onChangeText={handleChange}
-            multiline
-            autoCapitalize="none"
-            autoCorrect={false}
-            textAlignVertical="top"
-            scrollEnabled={false}
-          />
-        </View>
       </ScrollView>
+
+      {/* Raw editor — sticky header + scrollable content */}
+      <View style={[se.editorWrap, { flex: 1, backgroundColor: colors.card, borderColor: colors.border, marginHorizontal: 16, marginBottom: insets.bottom + 16 }]}>
+        <View style={[se.editorHeader, { borderBottomColor: colors.border }]}>
+          <Feather name="file-text" size={14} color={colors.mutedForeground} />
+          <Text style={[se.editorLabel, { color: colors.mutedForeground }]}>Nội dung M3U thô</Text>
+        </View>
+        <TextInput
+          style={[se.editor, { color: colors.foreground, flex: 1 }]}
+          placeholder={"#EXTM3U\n#EXTINF:-1,Tên kênh\nhttps://stream.url/live.m3u8"}
+          placeholderTextColor={colors.mutedForeground}
+          value={list.content}
+          onChangeText={handleChange}
+          multiline
+          autoCapitalize="none"
+          autoCorrect={false}
+          textAlignVertical="top"
+          scrollEnabled={true}
+        />
+      </View>
     </KeyboardAvoidingView>
   );
 }
