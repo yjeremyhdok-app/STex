@@ -1266,19 +1266,6 @@ function NativeBrowser() {
             })}
           </View>
 
-          {/* Debug diagnostic row */}
-          <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 4, gap: 8, flexWrap: 'wrap' }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-              <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: jsActive ? '#22c55e' : '#ef4444' }} />
-              <Text style={{ fontSize: 11, color: colors.mutedForeground }}>{jsActive ? 'JS ✓' : 'JS ?'}</Text>
-            </View>
-            {netDebug.map((d, i) => (
-              <Text key={i} style={{ fontSize: 10, color: '#6b7280', flexShrink: 1 }} numberOfLines={1}>
-                {d.kind.toUpperCase()}: {d.url.slice(0, 40)}
-              </Text>
-            ))}
-          </View>
-
           {/* Streams list */}
           {activeTab === "streams" && (
             <FlatList
