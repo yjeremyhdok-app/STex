@@ -297,24 +297,92 @@ export function BrowserAddToM3UModal({ visible, onClose, prefillUrl, prefillPage
           <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
             <ScrollView style={{ flex: 1 }} contentContainerStyle={[s.editContent, { paddingBottom: insets.bottom + 40 }]} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
 
-              {/* Stream URL (prominent) */}
-              <View style={[s.urlPreview, { backgroundColor: colors.card, borderColor: colors.primary + "60" }]}>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 }}>
-                  <View style={[s.streamBadge, { backgroundColor: colors.primary + "20" }]}>
-                    <Text style={[s.streamBadgeTxt, { color: colors.primary }]}>STREAM URL</Text>
+              {/* Stream URL section */}
+              {editChannel ? (
+                /* Editing existing channel: show current + new side-by-side with change button */
+                <View style={{ gap: 8, marginBottom: 16 }}>
+                  {/* Current saved URL */}
+                  <View style={[s.urlPreview, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                    <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                      <View style={[s.streamBadge, { backgroundColor: colors.mutedForeground + "20" }]}>
+                        <Text style={[s.streamBadgeTxt, { color: colors.mutedForeground }]}>URL HIỆN TẠI</Text>
+                      </View>
+                      <TouchableOpacity
+                        style={[s.changeBtn, { backgroundColor: "#f59e0b18", borderColor: "#f59e0b50" }]}
+                        onPress={() => Alert.alert(
+                          "Thay đổi Stream URL?",
+                          `Thay thế:\n${editChannel.url}\n\nBằng URL mới:\n${prefillUrl}`,
+                          [
+                            { text: "Huỷ", style: "cancel" },
+                            {
+                              text: "Thay đổi",
+                              style: "destructive",
+                              onPress: () => setUrl(prefillUrl),
+                            },
+                          ],
+                        )}
+                      >
+                        <Feather name="refresh-cw" size={13} color="#f59e0b" />
+                        <Text style={[s.changeBtnTxt, { color: "#f59e0b" }]}>Thay đổi</Text>
+                      </TouchableOpacity>
+                    </View>
+                    <Text style={[s.urlReadonly, s.mono, { color: url !== editChannel.url ? colors.mutedForeground + "80" : colors.foreground }]} selectable>
+                      {editChannel.url}
+                    </Text>
                   </View>
+
+                  {/* New URL from browser */}
+                  {prefillUrl && prefillUrl !== editChannel.url && (
+                    <View style={[s.urlPreview, { backgroundColor: colors.card, borderColor: colors.primary + "60" }]}>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 8 }}>
+                        <View style={[s.streamBadge, { backgroundColor: colors.primary + "20" }]}>
+                          <Text style={[s.streamBadgeTxt, { color: colors.primary }]}>URL MỚI (từ trình duyệt)</Text>
+                        </View>
+                      </View>
+                      <Text style={[s.urlReadonly, s.mono, { color: url === prefillUrl ? colors.primary : colors.foreground }]} selectable>
+                        {prefillUrl}
+                      </Text>
+                      {url === prefillUrl && (
+                        <View style={{ flexDirection: "row", alignItems: "center", gap: 4, marginTop: 6 }}>
+                          <Feather name="check-circle" size={13} color="#22c55e" />
+                          <Text style={{ fontSize: 12, color: "#22c55e", fontFamily: "Inter_500Medium" }}>Đã chọn URL mới này</Text>
+                        </View>
+                      )}
+                    </View>
+                  )}
+
+                  {/* Manual edit toggle */}
+                  <TextInput
+                    style={[s.urlInput, s.mono, { backgroundColor: colors.card, borderColor: colors.border, color: colors.foreground }]}
+                    value={url}
+                    onChangeText={setUrl}
+                    placeholder="https://..."
+                    placeholderTextColor={colors.mutedForeground}
+                    autoCapitalize="none"
+                    keyboardType="url"
+                    multiline
+                  />
                 </View>
-                <TextInput
-                  style={[s.urlInput, s.mono, { backgroundColor: colors.background, borderColor: colors.border, color: colors.foreground }]}
-                  value={url}
-                  onChangeText={setUrl}
-                  placeholder="https://..."
-                  placeholderTextColor={colors.mutedForeground}
-                  autoCapitalize="none"
-                  keyboardType="url"
-                  multiline
-                />
-              </View>
+              ) : (
+                /* New channel: simple URL input pre-filled from browser */
+                <View style={[s.urlPreview, { backgroundColor: colors.card, borderColor: colors.primary + "60", marginBottom: 0 }]}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                    <View style={[s.streamBadge, { backgroundColor: colors.primary + "20" }]}>
+                      <Text style={[s.streamBadgeTxt, { color: colors.primary }]}>STREAM URL</Text>
+                    </View>
+                  </View>
+                  <TextInput
+                    style={[s.urlInput, s.mono, { backgroundColor: colors.background, borderColor: colors.border, color: colors.foreground }]}
+                    value={url}
+                    onChangeText={setUrl}
+                    placeholder="https://..."
+                    placeholderTextColor={colors.mutedForeground}
+                    autoCapitalize="none"
+                    keyboardType="url"
+                    multiline
+                  />
+                </View>
+              )}
 
               {/* Name */}
               <View style={s.field}>
@@ -454,4 +522,8 @@ const s = StyleSheet.create({
   previewLabel: { fontFamily: "Inter_700Bold", fontSize: 10, letterSpacing: 1 },
   previewCode: { fontSize: 11, lineHeight: 16 },
   mono: { fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace" },
+
+  changeBtn: { flexDirection: "row", alignItems: "center", gap: 5, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6 },
+  changeBtnTxt: { fontFamily: "Inter_600SemiBold", fontSize: 12 },
+  urlReadonly: { fontSize: 12, lineHeight: 17 },
 });
