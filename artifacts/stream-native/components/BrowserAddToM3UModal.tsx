@@ -8,11 +8,8 @@ import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useColors } from "@/hooks/useColors";
 import { useM3ULists, parseChannels, M3UList, M3UChannel, M3UHeaders } from "@/hooks/useM3ULists";
-
-const STORAGE_KEY = "@m3u_store_v2";
 
 type Step = "list" | "channels" | "edit";
 
@@ -64,18 +61,14 @@ export function BrowserAddToM3UModal({ visible, onClose, prefillUrl, prefillPage
     setStep("list");
 
     // Reload from storage so we see lists created in other tabs, then auto-advance
-    reload().then(() => {
-      // lists state is set inside reload(); we read fresh from storage directly
-      AsyncStorage.getItem(STORAGE_KEY).then((raw) => {
-        const freshLists: M3UList[] = raw ? (JSON.parse(raw) as { lists: M3UList[] }).lists ?? [] : [];
-        if (freshLists.length === 1) {
-          setSelectedListId(freshLists[0].id);
-          setStep("channels");
-        } else {
-          setStep("list");
-        }
-      }).catch(() => setStep("list"));
-    });
+    reload().then((freshLists) => {
+      if (freshLists.length === 1) {
+        setSelectedListId(freshLists[0].id);
+        setStep("channels");
+      } else {
+        setStep("list");
+      }
+    }).catch(() => setStep("list"));
   }, [visible, prefillPageUrl, prefillUrl, reload]);
 
   const selectedList = lists.find((l) => l.id === selectedListId) ?? null;
@@ -97,22 +90,35 @@ export function BrowserAddToM3UModal({ visible, onClose, prefillUrl, prefillPage
   };
 
   const pickChannel = (ch: M3UChannel | null) => {
+    const pageReferer = prefillPageUrl
+      ? (() => { try { return new URL(prefillPageUrl).origin + "/"; } catch { return ""; } })()
+      : "";
+
     if (ch) {
       setEditChannel(ch);
       setName(ch.name);
-      setUrl(ch.url);
-      const h = ch.headers;
+      setUrl(ch.url); // user can replace via "Thay đổi" button
+      // Merge: channel's saved headers take priority; fall back to browser prefills for empty fields
+      const h: M3UHeaders = {
+        referer: ch.headers.referer || pageReferer,
+        userAgent: ch.headers.userAgent || "",
+        cookie: ch.headers.cookie || "",
+        authorization: ch.headers.authorization || "",
+      };
       setHeaders(h);
       setToggles({
-        referer: !!h.referer, userAgent: !!h.userAgent,
-        cookie: !!h.cookie, authorization: !!h.authorization,
+        referer: !!h.referer,
+        userAgent: !!h.userAgent,
+        cookie: !!h.cookie,
+        authorization: !!h.authorization,
       });
     } else {
       setEditChannel(null);
       setName(guessName(prefillPageUrl));
       setUrl(prefillUrl);
-      setHeaders({ ...EMPTY_HEADERS, referer: prefillPageUrl ? (() => { try { return new URL(prefillPageUrl).origin + "/"; } catch { return ""; } })() : "" });
-      setToggles({ referer: !!prefillPageUrl, userAgent: false, cookie: false, authorization: false });
+      const h: M3UHeaders = { ...EMPTY_HEADERS, referer: pageReferer };
+      setHeaders(h);
+      setToggles({ referer: !!pageReferer, userAgent: false, cookie: false, authorization: false });
     }
     setStep("edit");
   };

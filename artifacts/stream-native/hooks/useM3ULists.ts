@@ -125,12 +125,14 @@ export function useM3ULists() {
   const [lists, setLists] = useState<M3UList[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (): Promise<M3UList[]> => {
     try {
       const raw = await AsyncStorage.getItem(STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw) as { lists: M3UList[] };
-        setLists(parsed.lists || []);
+        const fresh = parsed.lists || [];
+        setLists(fresh);
+        return fresh;
       } else {
         const legacy = await AsyncStorage.getItem(LEGACY_KEY);
         if (legacy && legacy.trim()) {
@@ -141,9 +143,11 @@ export function useM3ULists() {
           const next = [migrated];
           setLists(next);
           await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ lists: next }));
+          return next;
         }
       }
     } catch { /* ignore */ }
+    return [];
   }, []);
 
   useEffect(() => {
