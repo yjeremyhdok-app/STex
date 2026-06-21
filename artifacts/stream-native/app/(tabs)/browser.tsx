@@ -1012,6 +1012,29 @@ function NativeBrowser() {
       if (data.type === "key") {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
         setKeys((prev) => {
+          const inMethod = (data.method || "").toLowerCase();
+          const isFpsKey = inMethod.includes("fps") || inMethod.includes("fairplay") || inMethod.includes("com.apple");
+
+          // For FPS/FairPlay from webkitSetMediaKeys: merge into any existing FPS entry
+          // (webkitneedkey fires first and creates the entry; webkitSetMediaKeys fires after)
+          if (isFpsKey) {
+            const existingFps = prev.find((k) =>
+              k.method.toLowerCase().includes("fps") || k.method.toLowerCase().includes("fairplay") ||
+              k.method.toLowerCase().includes("com.apple") || k.label.startsWith("DRM: com.apple")
+            );
+            if (existingFps) {
+              return prev.map((k) => k === existingFps ? {
+                ...k,
+                // Prefer the more specific method string (com.apple.fps.1_0 over com.apple.fps)
+                method: (data.method || "").length > k.method.length ? data.method! : k.method,
+                label: k.contentId || k.initHex
+                  ? k.label  // keep existing label if we already have useful data
+                  : (data.label || k.label),
+              } : k);
+            }
+          }
+
+          // Normal dedup by keyUri + method
           const existing = prev.find((k) => k.keyUri === data.keyUri && k.method === data.method);
           if (existing) {
             if (data.keyHex && !existing.keyHex) {
