@@ -30,6 +30,9 @@ interface DetectedKey {
   contentId: string;   // FairPlay skd:// content ID
   licenseUrl: string;  // License server URL (captured from XHR)
   initHex: string;     // Raw FairPlay initData as hex (first 128 bytes)
+  psshHex: string;     // Full PSSH box hex (Widevine initData)
+  wvChallenge: string; // Widevine license challenge bytes (from EME message event)
+  wvResponse: string;  // Widevine license response bytes (from session.update)
 }
 
 // ─── Injected JS ──────────────────────────────────────────────────────────────
@@ -215,18 +218,42 @@ const INJECTED_JS = `
   }
 
   // ── 1. XHR interceptor ──
+  function _isLicenseUrl(u) {
+    var ul = u.toLowerCase();
+    if (ul.indexOf('google-analytics') !== -1 || ul.indexOf('doubleclick') !== -1
+      || ul.indexOf('analytics') !== -1 || ul.indexOf('tracking') !== -1 || ul.indexOf('gtag') !== -1) return false;
+    return ul.indexOf('license') !== -1 || ul.indexOf('fairplay') !== -1
+      || ul.indexOf('/drm/') !== -1 || ul.indexOf('keydelivery') !== -1
+      || ul.indexOf('widevine') !== -1 || ul.indexOf('keyserver') !== -1
+      || ul.indexOf('/key/') !== -1 || ul.indexOf('ckc') !== -1;
+  }
   var OrigXHR = window.XMLHttpRequest;
   function PatchedXHR() {
     var xhr = new OrigXHR();
-    var _url = '';
+    var _url = ''; var _isLic = false;
     var origOpen = xhr.open.bind(xhr);
     xhr.open = function(method, url) {
       _url = String(url);
+      _isLic = _isLicenseUrl(_url);
       _xhrCount++;
       // Post first 3 XHR URLs as debug (so we know interceptor fires)
       if (_xhrCount <= 3) post({ type: 'net', kind: 'xhr', n: _xhrCount, url: _url.slice(0, 100) });
       sendStream(_url);
       return origOpen.apply(xhr, arguments);
+    };
+    var origSend = xhr.send.bind(xhr);
+    xhr.send = function(body) {
+      // Capture Widevine challenge (request body sent to license server)
+      if (_isLic && body) {
+        try {
+          var ab = body instanceof ArrayBuffer ? body : (ArrayBuffer.isView(body) ? body.buffer : null);
+          if (ab) {
+            var chalHex = bufToHexFull(ab);
+            if (chalHex.length >= 4) post({ type: 'wv_challenge', keySystem: 'xhr', hex: chalHex });
+          }
+        } catch(e) {}
+      }
+      return origSend.apply(xhr, arguments);
     };
     xhr.addEventListener('load', function() {
       try {
@@ -243,16 +270,15 @@ const INJECTED_JS = `
           }
         }
       } catch(e) {}
-      // License server detection (FairPlay/Widevine) — exclude analytics/tracking domains
+      // License server detection (FairPlay/Widevine)
       try {
-        var ul = _url.toLowerCase();
-        var isAnalytics = ul.indexOf('google-analytics') !== -1 || ul.indexOf('doubleclick') !== -1
-          || ul.indexOf('analytics') !== -1 || ul.indexOf('tracking') !== -1 || ul.indexOf('gtag') !== -1;
-        if (!isAnalytics && _url && (ul.indexOf('license') !== -1 || ul.indexOf('fairplay') !== -1
-          || ul.indexOf('/drm/') !== -1 || ul.indexOf('keydelivery') !== -1
-          || ul.indexOf('widevine') !== -1 || ul.indexOf('keyserver') !== -1
-          || ul.indexOf('/key/') !== -1 || ul.indexOf('ckc') !== -1)) {
+        if (_isLic) {
           post({ type: 'fps_license', url: _url, status: xhr.status });
+          // Capture binary response (Widevine license)
+          if (xhr.responseType === 'arraybuffer' && xhr.response) {
+            var rhex = bufToHexFull(xhr.response);
+            if (rhex.length >= 4) post({ type: 'wv_response', keySystem: 'xhr', hex: rhex });
+          }
         }
       } catch(e2) {}
     });
@@ -272,6 +298,18 @@ const INJECTED_JS = `
     // Post first 3 fetch URLs as debug
     if (_fetchCount <= 3) post({ type: 'net', kind: 'fetch', n: _fetchCount, url: url.slice(0, 100) });
     sendStream(url);
+    var _isLicFetch = url && _isLicenseUrl(url);
+    // Capture Widevine challenge (request body) before sending
+    if (_isLicFetch && init && init.body) {
+      try {
+        var bodyAb = init.body instanceof ArrayBuffer ? init.body
+          : (ArrayBuffer.isView(init.body) ? init.body.buffer : null);
+        if (bodyAb) {
+          var fChalHex = bufToHexFull(bodyAb);
+          if (fChalHex.length >= 4) post({ type: 'wv_challenge', keySystem: 'fetch', hex: fChalHex });
+        }
+      } catch(ebody) {}
+    }
     var p = origFetch.apply(this, arguments);
     p.then(function(res) {
       try { var clone = res.clone(); clone.text().then(function(t){ scanText(t, url); }).catch(function(){}); } catch(e) {}
@@ -286,16 +324,17 @@ const INJECTED_JS = `
           }
         }
       } catch(e) {}
-      // License server detection via fetch — exclude analytics
+      // License server detection via fetch + response body capture
       try {
-        var ul2 = url.toLowerCase();
-        var isAnal = ul2.indexOf('google-analytics') !== -1 || ul2.indexOf('doubleclick') !== -1
-          || ul2.indexOf('analytics') !== -1 || ul2.indexOf('tracking') !== -1 || ul2.indexOf('gtag') !== -1;
-        if (!isAnal && url && (ul2.indexOf('license') !== -1 || ul2.indexOf('fairplay') !== -1
-          || ul2.indexOf('/drm/') !== -1 || ul2.indexOf('keydelivery') !== -1
-          || ul2.indexOf('widevine') !== -1 || ul2.indexOf('keyserver') !== -1
-          || ul2.indexOf('/key/') !== -1 || ul2.indexOf('ckc') !== -1)) {
+        if (_isLicFetch) {
           post({ type: 'fps_license', url: url, status: res.status });
+          // Capture Widevine license response bytes
+          try {
+            res.clone().arrayBuffer().then(function(buf) {
+              var fRespHex = bufToHexFull(buf);
+              if (fRespHex.length >= 4) post({ type: 'wv_response', keySystem: 'fetch', hex: fRespHex });
+            }).catch(function(){});
+          } catch(e3) {}
         }
       } catch(e2) {}
     }).catch(function(){});
@@ -437,14 +476,23 @@ const INJECTED_JS = `
                         }
                       } catch(e2) {}
                     }
-                    post({ type: 'drm', keySystem: keySystem, initDataType: initDataType, kids: kids, contentId: contentId });
+                    post({ type: 'drm', keySystem: keySystem, initDataType: initDataType, kids: kids, contentId: contentId, psshHex: bufToHexFull(ab) });
                   } catch(e) {}
                   return origGR(initDataType, initData);
                 };
+                // ── EME message event — Widevine challenge bytes ──
+                session.addEventListener('message', function(e) {
+                  try {
+                    var ab2 = e.message instanceof ArrayBuffer ? e.message : (e.message.buffer || e.message);
+                    var chalHex = bufToHexFull(ab2);
+                    if (chalHex.length >= 4) post({ type: 'wv_challenge', keySystem: keySystem, hex: chalHex });
+                  } catch(e2) {}
+                }, false);
                 var origUpdate = session.update.bind(session);
                 session.update = function(response) {
+                  var _rab = response instanceof ArrayBuffer ? response : (response.buffer || response);
                   try {
-                    var rtext = new TextDecoder().decode(response instanceof ArrayBuffer ? response : response.buffer || response);
+                    var rtext = new TextDecoder().decode(_rab);
                     var rjson = JSON.parse(rtext);
                     if (rjson.keys && Array.isArray(rjson.keys)) {
                       rjson.keys.forEach(function(rk) {
@@ -453,7 +501,13 @@ const INJECTED_JS = `
                         if (keyHex) post({ type: 'clearkey', kidHex: kidHex, keyHex: keyHex });
                       });
                     }
-                  } catch(e) {}
+                  } catch(e) {
+                    // Binary (Widevine/PlayReady) — bắt raw bytes cho external tools
+                    try {
+                      var rhex = bufToHexFull(_rab);
+                      if (rhex.length >= 4) post({ type: 'wv_response', keySystem: keySystem, hex: rhex });
+                    } catch(e2) {}
+                  }
                   return origUpdate(response);
                 };
                 return session;
@@ -1053,6 +1107,9 @@ function NativeBrowser() {
             contentId: "",
             licenseUrl: "",
             initHex: "",
+            psshHex: "",
+            wvChallenge: "",
+            wvResponse: "",
           };
           const next = [entry, ...prev];
           if (!panelOpen) {
@@ -1071,18 +1128,21 @@ function NativeBrowser() {
           const ks = (data as any).keySystem as string || "unknown";
           const kidsArr: string[] = (data as any).kids || [];
           const cid: string = (data as any).contentId || "";
+          const pssh: string = (data as any).psshHex || "";
           const existing = prev.find((k) => k.method === ks && k.label.startsWith("DRM:"));
           if (existing) {
             const merged = [...new Set([...existing.kids, ...kidsArr])];
             return prev.map((k) => k === existing ? {
               ...k, kids: merged,
               contentId: cid || k.contentId,
+              psshHex: pssh || k.psshHex,
             } : k);
           }
           const entry: DetectedKey = {
             method: ks, keyUri: "", keyHex: "", kidHex: "",
             iv: "", label: "DRM: " + ks, kids: kidsArr,
             contentId: cid, licenseUrl: "", initHex: "",
+            psshHex: pssh, wvChallenge: "", wvResponse: "",
           };
           const next = [entry, ...prev];
           if (!panelOpen) {
@@ -1109,6 +1169,7 @@ function NativeBrowser() {
             method: "ClearKey", keyUri: "", keyHex: kh, kidHex: kid,
             iv: "", label: "ClearKey (key extracted ✓)", kids: kid ? [kid] : [],
             contentId: "", licenseUrl: "", initHex: "",
+            psshHex: "", wvChallenge: "", wvResponse: "",
           };
           return [entry, ...prev];
         });
@@ -1136,6 +1197,7 @@ function NativeBrowser() {
               method: "com.apple.fps", keyUri: "", keyHex: "", kidHex: "",
               iv: "", label: "FairPlay (webkitneedkey)", kids: [],
               contentId: cid, licenseUrl: "", initHex,
+              psshHex: "", wvChallenge: "", wvResponse: "",
             };
             return [entry, ...prev];
           });
@@ -1155,6 +1217,57 @@ function NativeBrowser() {
               return prev.map((k) => k === existing ? { ...k, licenseUrl: lurl } : k);
             }
             return prev;
+          });
+        }
+      }
+
+      // Widevine EME challenge (from session 'message' event or XHR/fetch request body)
+      if (data.type === "wv_challenge") {
+        const chalHex: string = (data as any).hex || "";
+        const ks: string = (data as any).keySystem || "";
+        if (chalHex) {
+          setKeys((prev) => {
+            // Find any existing Widevine/DRM entry to attach challenge to
+            const existing = prev.find((k) =>
+              k.method.toLowerCase().includes("widevine") ||
+              (k.label.startsWith("DRM:") && !k.method.toLowerCase().includes("fps"))
+            );
+            if (existing) {
+              return prev.map((k) => k === existing ? { ...k, wvChallenge: chalHex } : k);
+            }
+            // No Widevine entry yet — create one
+            const entry: DetectedKey = {
+              method: ks || "com.widevine.alpha", keyUri: "", keyHex: "", kidHex: "",
+              iv: "", label: "Widevine (challenge bắt được)", kids: [],
+              contentId: "", licenseUrl: "", initHex: "",
+              psshHex: "", wvChallenge: chalHex, wvResponse: "",
+            };
+            return [entry, ...prev];
+          });
+        }
+      }
+
+      // Widevine EME response (from session.update or XHR/fetch response body)
+      if (data.type === "wv_response") {
+        const respHex: string = (data as any).hex || "";
+        const ks: string = (data as any).keySystem || "";
+        if (respHex) {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+          setKeys((prev) => {
+            const existing = prev.find((k) =>
+              k.method.toLowerCase().includes("widevine") ||
+              (k.label.startsWith("DRM:") && !k.method.toLowerCase().includes("fps"))
+            );
+            if (existing) {
+              return prev.map((k) => k === existing ? { ...k, wvResponse: respHex } : k);
+            }
+            const entry: DetectedKey = {
+              method: ks || "com.widevine.alpha", keyUri: "", keyHex: "", kidHex: "",
+              iv: "", label: "Widevine (license response bắt được)", kids: [],
+              contentId: "", licenseUrl: "", initHex: "",
+              psshHex: "", wvChallenge: "", wvResponse: respHex,
+            };
+            return [entry, ...prev];
           });
         }
       }
@@ -1739,6 +1852,33 @@ function NativeBrowser() {
                       </TouchableOpacity>
                     )}
 
+                    {/* Widevine PSSH hex */}
+                    {!!k.psshHex && (
+                      <TouchableOpacity style={[styles.keyValueRow, { borderColor: colors.border }]} onPress={() => copyText(k.psshHex)}>
+                        <Text style={[styles.keyValueLabel, { color: "#60a5fa" }]}>PSSH</Text>
+                        <Text style={[styles.monoText, { color: "#60a5fa", flex: 1, fontSize: 10 }]} numberOfLines={1} ellipsizeMode="middle">{k.psshHex}</Text>
+                        <Feather name="copy" size={13} color="#60a5fa" />
+                      </TouchableOpacity>
+                    )}
+
+                    {/* Widevine license challenge (request body) */}
+                    {!!k.wvChallenge && (
+                      <TouchableOpacity style={[styles.keyValueRow, { borderColor: colors.border }]} onPress={() => copyText(k.wvChallenge)}>
+                        <Text style={[styles.keyValueLabel, { color: "#34d399" }]}>CHAL</Text>
+                        <Text style={[styles.monoText, { color: "#34d399", flex: 1, fontSize: 10 }]} numberOfLines={1} ellipsizeMode="middle">{k.wvChallenge}</Text>
+                        <Feather name="copy" size={13} color="#34d399" />
+                      </TouchableOpacity>
+                    )}
+
+                    {/* Widevine license response */}
+                    {!!k.wvResponse && (
+                      <TouchableOpacity style={[styles.keyValueRow, { borderColor: colors.border }]} onPress={() => copyText(k.wvResponse)}>
+                        <Text style={[styles.keyValueLabel, { color: "#f472b6" }]}>RESP</Text>
+                        <Text style={[styles.monoText, { color: "#f472b6", flex: 1, fontSize: 10 }]} numberOfLines={1} ellipsizeMode="middle">{k.wvResponse}</Text>
+                        <Feather name="copy" size={13} color="#f472b6" />
+                      </TouchableOpacity>
+                    )}
+
                     {/* License server URL */}
                     {!!k.licenseUrl && (
                       <TouchableOpacity style={[styles.keyValueRow, { borderColor: colors.border }]} onPress={() => copyText(k.licenseUrl)}>
@@ -1775,10 +1915,14 @@ function NativeBrowser() {
                     {/* Status hint */}
                     {!k.keyHex && (
                       <Text style={[styles.keyHint, { color: colors.mutedForeground }]}>
-                        {isDrm && k.contentId
+                        {isDrm && k.wvResponse
+                          ? `📦 Widevine response bắt được (${k.wvResponse.length / 2} bytes) — cần device L3 key để decrypt`
+                          : isDrm && k.wvChallenge
+                          ? `🔄 Widevine challenge bắt được — đang chờ response từ server...`
+                          : isDrm && k.contentId
                           ? `🔑 Content ID bắt được — cần license server để giải mã`
                           : isDrm && k.initHex
-                          ? `🔍 Raw initData bắt được (${k.initHex.length / 2} bytes) — FairPlay mã hóa ở hardware, key không lấy được trên iOS`
+                          ? `🔍 Raw initData bắt được (${k.initHex.length / 2} bytes) — FairPlay mã hóa ở hardware`
                           : isDrm && k.kids.length > 0
                           ? `🔑 Đã bắt ${k.kids.length} KID — cần license server key`
                           : isDrm
