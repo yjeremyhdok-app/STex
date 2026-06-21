@@ -29,6 +29,7 @@ interface DetectedKey {
   kids: string[];      // KIDs from PSSH (may be multiple)
   contentId: string;   // FairPlay skd:// content ID
   licenseUrl: string;  // License server URL (captured from XHR)
+  initHex: string;     // Raw FairPlay initData as hex (first 128 bytes)
 }
 
 // ─── Injected JS ──────────────────────────────────────────────────────────────
@@ -488,7 +489,25 @@ const INJECTED_JS = `
       if (_watchedVideos.has(v)) return;
       _watchedVideos.add(v);
       v.addEventListener('webkitneedkey', function(e) {
-        try { post({ type: 'fps_needkey', contentId: decodeFPSContentId(e.initData) }); } catch(ex) {}
+        try {
+          var contentId = decodeFPSContentId(e.initData);
+          var u8raw = e.initData instanceof Uint8Array ? e.initData : new Uint8Array(e.initData.buffer || e.initData);
+          var initHex = '';
+          for (var _hi = 0; _hi < Math.min(u8raw.length, 128); _hi++) {
+            initHex += ('0' + u8raw[_hi].toString(16)).slice(-2);
+          }
+          if (!contentId) {
+            var printable = '';
+            for (var _pi = 0; _pi < Math.min(u8raw.length, 256); _pi++) {
+              var _ch = u8raw[_pi];
+              if (_ch >= 32 && _ch < 127) printable += String.fromCharCode(_ch);
+            }
+            var _urlM = printable.match(/https?:\\/\\/\\S+/);
+            if (_urlM) contentId = _urlM[0];
+            else if (printable.trim().length > 2) contentId = printable.trim();
+          }
+          post({ type: 'fps_needkey', contentId: contentId, initHex: initHex });
+        } catch(ex) {}
       });
     };
     var _existingVids = document.querySelectorAll('video');
@@ -1010,6 +1029,7 @@ function NativeBrowser() {
             kids: [],
             contentId: "",
             licenseUrl: "",
+            initHex: "",
           };
           const next = [entry, ...prev];
           if (!panelOpen) {
@@ -1039,7 +1059,7 @@ function NativeBrowser() {
           const entry: DetectedKey = {
             method: ks, keyUri: "", keyHex: "", kidHex: "",
             iv: "", label: "DRM: " + ks, kids: kidsArr,
-            contentId: cid, licenseUrl: "",
+            contentId: cid, licenseUrl: "", initHex: "",
           };
           const next = [entry, ...prev];
           if (!panelOpen) {
@@ -1065,7 +1085,7 @@ function NativeBrowser() {
           const entry: DetectedKey = {
             method: "ClearKey", keyUri: "", keyHex: kh, kidHex: kid,
             iv: "", label: "ClearKey (key extracted ✓)", kids: kid ? [kid] : [],
-            contentId: "", licenseUrl: "",
+            contentId: "", licenseUrl: "", initHex: "",
           };
           return [entry, ...prev];
         });
@@ -1074,7 +1094,8 @@ function NativeBrowser() {
       // WebKit FairPlay webkitneedkey — Content ID from initData
       if (data.type === "fps_needkey") {
         const cid: string = (data as any).contentId || "";
-        if (cid) {
+        const initHex: string = (data as any).initHex || "";
+        if (cid || initHex) {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
           setKeys((prev) => {
             const existing = prev.find((k) =>
@@ -1082,12 +1103,16 @@ function NativeBrowser() {
               k.label.startsWith("DRM: com.apple")
             );
             if (existing) {
-              return prev.map((k) => k === existing ? { ...k, contentId: cid } : k);
+              return prev.map((k) => k === existing ? {
+                ...k,
+                contentId: cid || k.contentId,
+                initHex: initHex || k.initHex,
+              } : k);
             }
             const entry: DetectedKey = {
               method: "com.apple.fps", keyUri: "", keyHex: "", kidHex: "",
-              iv: "", label: "FairPlay (Content ID bắt được)", kids: [],
-              contentId: cid, licenseUrl: "",
+              iv: "", label: "FairPlay (webkitneedkey)", kids: [],
+              contentId: cid, licenseUrl: "", initHex,
             };
             return [entry, ...prev];
           });
@@ -1673,12 +1698,21 @@ function NativeBrowser() {
                       </TouchableOpacity>
                     )}
 
-                    {/* FairPlay Content ID (skd://) */}
+                    {/* FairPlay Content ID (skd:// or extracted text) */}
                     {!!k.contentId && (
                       <TouchableOpacity style={[styles.keyValueRow, { borderColor: colors.border }]} onPress={() => copyText(k.contentId)}>
                         <Text style={[styles.keyValueLabel, { color: "#f97316" }]}>CID</Text>
                         <Text style={[styles.monoText, { color: "#f97316", flex: 1 }]} numberOfLines={1} ellipsizeMode="middle">{k.contentId}</Text>
                         <Feather name="copy" size={13} color="#f97316" />
+                      </TouchableOpacity>
+                    )}
+
+                    {/* FairPlay raw initData hex (when no CID decoded) */}
+                    {!!k.initHex && (
+                      <TouchableOpacity style={[styles.keyValueRow, { borderColor: colors.border }]} onPress={() => copyText(k.initHex)}>
+                        <Text style={[styles.keyValueLabel, { color: "#94a3b8" }]}>INIT</Text>
+                        <Text style={[styles.monoText, { color: "#94a3b8", flex: 1, fontSize: 10 }]} numberOfLines={1} ellipsizeMode="middle">{k.initHex}</Text>
+                        <Feather name="copy" size={13} color="#94a3b8" />
                       </TouchableOpacity>
                     )}
 
@@ -1720,10 +1754,12 @@ function NativeBrowser() {
                       <Text style={[styles.keyHint, { color: colors.mutedForeground }]}>
                         {isDrm && k.contentId
                           ? `🔑 Content ID bắt được — cần license server để giải mã`
+                          : isDrm && k.initHex
+                          ? `🔍 Raw initData bắt được (${k.initHex.length / 2} bytes) — FairPlay mã hóa ở hardware, key không lấy được trên iOS`
                           : isDrm && k.kids.length > 0
                           ? `🔑 Đã bắt ${k.kids.length} KID — cần license server key`
                           : isDrm
-                          ? "⚠️ DRM cứng — nhấn play video để kích hoạt EME và bắt KID/CID"
+                          ? "⚠️ DRM cứng — nhấn play video để kích hoạt EME và bắt CID/initData"
                           : "⏳ Đang fetch key... (tối đa 5s)"}
                       </Text>
                     )}
